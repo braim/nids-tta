@@ -1,0 +1,24 @@
+\begin{table*}[t]
+\centering
+\caption{F1 across all source--target permutations ($N{=}$--, target scaler).
+  Best per (source, target) column group in \textbf{bold}.}
+\label{tab:main_results}
+\begin{tabular}{l|l|ccc|ccc|ccc}
+\toprule
+& & \multicolumn{3}{c|}{\textbf{KAN (spline-only)}} & \multicolumn{3}{c|}{\textbf{CNN (last layer)}} & \multicolumn{3}{c}{\textbf{TabTransformer (last layer)}} \\
+\textbf{Source} & \textbf{Target} & Zero & Few-only & TTA & Zero & Few-only & TTA & Zero & Few-only & TTA \\
+\midrule
+\multirow{2}{*}{ToN-IoT}
+    & UNSW    & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+    & CICIDS  & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+\midrule
+\multirow{2}{*}{UNSW}
+    & ToN-IoT & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+    & CICIDS  & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+\midrule
+\multirow{2}{*}{CICIDS}
+    & ToN-IoT & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+    & UNSW    & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table*}
