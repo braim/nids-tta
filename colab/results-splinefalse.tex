@@ -1,0 +1,26 @@
+\begin{table*}[t]
+\centering
+\caption{F1 across all source--target permutations ($N{=}1000$, target scaler).
+  \textbf{Bold}: best architecture per (source, target, strategy).}
+\label{tab:main_results}
+\begin{tabular}{l|l|ccc|ccc|ccc}
+\toprule
+& & \multicolumn{3}{c|}{\textbf{KAN }} & \multicolumn{3}{c|}{\textbf{CNN }} & \multicolumn{3}{c}{\textbf{TabTransformer }} \\
+\textbf{Source} & \textbf{Target} & Zero & Few-only & TTA & Zero & Few-only & TTA & Zero & Few-only & TTA \\
+\midrule
+\multirow{2}{*}{ToN-IoT}
+    & UNSW    & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+    & CICIDS  & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+\midrule
+\multirow{2}{*}{UNSW}
+    & ToN-IoT & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+    & CICIDS  & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+\midrule
+\multirow{2}{*}{CICIDS}
+    & ToN-IoT & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+    & UNSW    & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+\midrule
+\multicolumn{2}{l|}{\textit{Wins (of 6)}} & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table*}
