@@ -1,6 +1,7 @@
 \begin{table*}[t]
 \centering
-\caption{F1 across all source--target permutations ($N{=}1000$, target scaler).
+\caption{F1 across all source--target permutations ($N{=}1000$ labelled pool, target scaler, SplineTrue=False).
+  TTA uses full layer-selective updates (norm layers + classifier head + last encoder layer).
   \textbf{Bold}: best architecture per (source, target, strategy).}
 \label{tab:main_results}
 \begin{tabular}{l|l|ccc|ccc|ccc}
@@ -9,18 +10,18 @@
 \textbf{Source} & \textbf{Target} & Zero & Few-only & TTA & Zero & Few-only & TTA & Zero & Few-only & TTA \\
 \midrule
 \multirow{2}{*}{ToN-IoT}
-    & UNSW    & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
-    & CICIDS  & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+    & UNSW    & 0.0221 & \textbf{0.9857} & 0.9685 & 0.0034 & 0.9760 & \textbf{0.9782} & \textbf{0.0516} & 0.9462 & 0.9267 \\
+    & CICIDS  & 0.0000 & \textbf{0.9389} & 0.9290 & \textbf{0.2366} & 0.9317 & 0.9201 & 0.0690 & 0.9222 & \textbf{0.9308} \\
 \midrule
 \multirow{2}{*}{UNSW}
-    & ToN-IoT & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
-    & CICIDS  & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+    & ToN-IoT & \textbf{0.7725} & 0.8475 & 0.8397 & 0.4958 & 0.8483 & \textbf{0.8479} & \textbf{0.7725} & \textbf{0.8778} & 0.8361 \\
+    & CICIDS  & \textbf{0.3230} & \textbf{0.9389} & \textbf{0.9221} & 0.2696 & 0.9317 & 0.9116 & 0.2181 & 0.9222 & 0.6869 \\
 \midrule
 \multirow{2}{*}{CICIDS}
-    & ToN-IoT & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
-    & UNSW    & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+    & ToN-IoT & \textbf{0.7720} & 0.8475 & \textbf{0.8663} & 0.2569 & 0.8483 & 0.8646 & 0.2399 & \textbf{0.8778} & 0.8263 \\
+    & UNSW    & 0.0194 & \textbf{0.9857} & \textbf{0.9792} & \textbf{0.0262} & 0.9760 & 0.9699 & 0.0074 & 0.9462 & 0.9239 \\
 \midrule
-\multicolumn{2}{l|}{\textit{Wins (of 6)}} & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+\multicolumn{2}{l|}{\textit{Wins (of 6)}} & 2.5 & 4 & 3 & 2 & 0 & 2 & 1.5 & 2 & 1 \\
 \bottomrule
 \end{tabular}
 \end{table*}
