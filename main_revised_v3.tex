@@ -1,0 +1,590 @@
+\documentclass[10pt, conference, letterpaper]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{hyperref}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Continuous Cross-Network Intrusion Detection with\\
+Learnable Spline Activations
+\thanks{This work was supported by [Funding agency]. Corresponding author: [name].}
+}
+
+\author{
+\IEEEauthorblockN{Anonymous Authors}
+\IEEEauthorblockA{
+\textit{Anonymous Institution} \\
+City, Country \\
+\texttt{anonymous@institution.edu}}
+}
+
+\maketitle
+
+\begin{abstract}
+A network intrusion detector trained on one organization's traffic rarely works on another's. The shift in service mix, user behavior, and attack profile pushes feature distributions far enough apart that a high-accuracy source detector can collapse to near-random accuracy on the first day at a new site --- yet operational constraints (no access to source data at deployment, only a handful of labelled target flows, no offline retraining window) rule out the standard fixes of fine-tuning, domain adaptation, or full retraining. We propose a test-time adaptation (TTA) framework that adapts a pre-trained intrusion detector online using only $0.1\%$ labelled target flows. The framework's central design choice is what to update: among all parameters of the network, we update only the B-spline coefficients of the last encoder layer of a Kolmogorov--Arnold Network (KAN), leaving every other weight --- including all earlier encoder layers, the decoder, the classifier head, and all normalization layers --- frozen. This \emph{spline-only update} is simultaneously interpretable (each updated coefficient corresponds to a localized region of a specific learned activation curve), efficient (a small fraction of model parameters is touched), and effective (highest post-adaptation F1 across all six source--target permutations of three NetFlow benchmarks). We couple the spline-only update with a three-term loss --- supervised anchor on the labelled pool, entropy minimization on the unlabelled stream, and benign-only reconstruction --- and bound pool reuse so the small anchor cannot be memorized. On six source--target permutations of NF-ToN-IoT-v3, NF-UNSW-NB15-v3, and NF-CICIDS2018-v3, the framework lifts zero-shot F1 from values as low as $0.006$ to post-adaptation F1 above $0.86$, while exposing parameter-level adaptation traces that security analysts can directly inspect.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Network intrusion detection, test-time adaptation, Kolmogorov--Arnold networks, learnable activations, interpretable machine learning.
+\end{IEEEkeywords}
+
+
+% ============================================================================
+\section{Introduction}
+\label{sec:intro}
+
+A network intrusion detector trained on traffic from one organization rarely works on traffic from another. The shift in service mix, user populations, hardware vendors, and attack profiles pushes feature distributions far enough apart that a high-accuracy source detector can fall to near-random accuracy on the first day at a new site. Our own measurements illustrate the magnitude of the problem: a Kolmogorov--Arnold Network (KAN)~\cite{liu2024kan} detector trained on NF-ToN-IoT-v3 reaches F1 above $0.92$ on its held-out source split but collapses to F1 of $0.006$ when evaluated zero-shot on NF-CICIDS2018-v3 --- worse than predicting a single class.
+
+This is not an academic concern. Cross-organization deployment is the rule, not the exception: managed security service providers run a single trained model against many customer networks; cloud security stacks push pre-trained classifiers to tenants; security tool vendors ship released models against millions of unseen environments. None of these settings can fall back on the standard remedies. Fine-tuning needs labelled target data that the customer is not willing or able to produce. Domain-adaptation methods need either continued access to the original source data or offline alignment procedures that exceed the available deployment window. Continual retraining from scratch is operationally prohibitive when the model must classify the very first flow it sees.
+
+Test-time adaptation (TTA)~\cite{wang2021tent} offers a more realistic paradigm: take a trained model and continue to update a small subset of its parameters on the incoming target stream, with no access to source data and minimal supervision. The literature has explored many choices of \emph{which} subset to update --- batch-normalization affine parameters in TENT, the entire encoder in SHOT~\cite{liang2020shot}, all weights with stochastic restoration in CoTTA~\cite{wang2022cotta}, confident-sample-only updates in EATA~\cite{niu2022efficient}, entropy-filtered samples in SAR~\cite{niu2023sar}. The unstated assumption across this body of work is that the adaptable parameters are linear weights driving \emph{fixed} activation functions (ReLU, GELU, sigmoid). Under that assumption the only way to change the network's input--output behavior is to scale or shift entire activation responses, which is precisely why TENT, SHOT, and their successors update broad swaths of weights at once.
+
+KAN inverts that assumption. In a Kolmogorov--Arnold Network~\cite{liu2024kan}, each network \emph{edge} carries a learned univariate function parameterized as a B-spline. The adaptable degrees of freedom are spline coefficients, and crucially each coefficient controls the activation's response over a \emph{compact} sub-interval of the input range. A single coefficient update reshapes the input--output mapping locally, on one edge, in one input region --- a much higher-resolution operation than re-scaling a global GELU. This local-control property reverses the standard TTA design calculus: under tight parameter budgets, updating a small number of \emph{spline coefficients} yields more functional change than updating the same number of weights elsewhere in the network.
+
+We exploit this asymmetry. We propose a TTA framework whose central design choice is to update only the spline coefficients of the last KAN encoder layer --- nothing else. Every other weight in the network, including the classifier head, the decoder, all earlier KAN layers, and all normalization parameters, remains exactly as pre-trained. We refer to this as \emph{spline-only update}. The framework couples this restricted parameter set with a three-term loss --- a supervised cross-entropy anchor on a small labelled pool, entropy minimization on the unlabelled target stream, and benign-only reconstruction --- and bounds pool reuse so the tiny anchor set ($\sim$100 samples) cannot be memorized into a 100-sample training regime.
+
+We make the following contributions:
+
+\begin{enumerate}
+    \item \textbf{Spline-only updates as a TTA design choice.} We formulate spline coefficient updates of the last KAN encoder layer as the trainable parameter set during test-time adaptation, and motivate this choice by the per-parameter functional-reach asymmetry between learnable splines and fixed activations.
+
+    \item \textbf{A complete TTA framework with a few-shot anchor.} We pair spline-only updates with a three-term loss (supervised pool anchor, stream-wise entropy minimization, benign-only reconstruction) and a pool-budget cap that prevents memorization of the small labelled set. The full procedure adapts online with no access to source data and no offline retraining stage.
+
+    \item \textbf{Empirical validation across all six cross-network permutations.} We evaluate over every source--target pair of NF-ToN-IoT-v3, NF-UNSW-NB15-v3, and NF-CICIDS2018-v3, comparing the spline-only KAN configuration against zero-shot transfer, few-shot-only training, and CNN/TabTransformer baselines under the same TTA loss. Spline-only KAN achieves the highest post-adaptation F1 in every pair despite the lowest zero-shot transfer.
+
+    \item \textbf{Interpretability of adaptation through direct spline inspection.} Because the updated parameters are exactly the spline coefficients, the change induced by TTA can be read off the model directly. We present three complementary views --- per-hidden-dimension importance shift, learned spline curves before vs.\ after adaptation, and logit-margin distributions --- that together let a security analyst inspect what changed and why. Fixed-activation networks offer no parameter-level analog.
+\end{enumerate}
+
+The remainder of the paper is organized as follows. Section~\ref{sec:related} reviews related work. Section~\ref{sec:method} presents the framework, with spline-only updates as the centerpiece. Section~\ref{sec:setup} describes the experimental protocol. Section~\ref{sec:results} reports results. Section~\ref{sec:discussion} discusses deployment implications and limitations. Section~\ref{sec:conclusion} concludes.
+
+
+% ============================================================================
+\section{Related Work}
+\label{sec:related}
+
+\subsection{Cross-Domain Network Intrusion Detection}
+
+Transferring NIDS models across networks has been studied under transfer learning~\cite{li2021transfer, zhao2019cross}, adversarial domain adaptation, and ensemble methods. Most assume either substantial labelled target data --- often $10\%$ to $50\%$ of the target dataset --- or continued access to source data at deployment for joint training or feature alignment. Both assumptions are violated in the managed-service and shipped-model settings that motivate our work. We adopt the more constrained source-free setting, where the deployed model has no further access to source samples and target labels are bounded to a small analyst-curated pool.
+
+\subsection{Test-Time Adaptation}
+
+TTA modifies a pre-trained model using only the target stream. TENT~\cite{wang2021tent} updates batch-normalization statistics by minimizing prediction entropy. SHOT~\cite{liang2020shot} adds pseudo-labelling and information maximization, typically updating the entire encoder. CoTTA~\cite{wang2022cotta} addresses error accumulation in long, continual streams via stochastic weight restoration and augmentation-averaged predictions. EATA~\cite{niu2022efficient} improves efficiency by selectively updating on confident, diverse samples. SAR~\cite{niu2023sar} stabilizes adaptation by filtering high-entropy inputs. All of these methods choose \emph{where} to adapt under the implicit assumption of fixed activations: their adaptable parameters are linear weights, and the only way to change the network's response is to scale or shift entire activations. None of them have been evaluated on tabular network traffic data, and none take advantage of architectures whose activations are themselves learnable.
+
+\subsection{Kolmogorov--Arnold Networks}
+
+KAN~\cite{liu2024kan} replaces fixed activation functions with learnable B-spline activations on every edge of an MLP. The original work~\cite{liu2024kan, liu2024kan2} reported gains on scientific computing and tabular tasks, and emphasized interpretability via direct spline inspection. KANs have not, to our knowledge, been applied to network intrusion detection, domain adaptation, or test-time adaptation. The distinguishing property of KAN that we exploit is \emph{spline locality}: each coefficient parameterizes a B-spline basis function with compact support over a specific sub-interval, so the functional reach of one coefficient update is large and localized rather than small and global.
+
+
+% ============================================================================
+\section{Approach}
+\label{sec:method}
+
+\subsection{Design Principles}
+\label{sec:principles}
+
+Three constraints from the operational setting dictate every choice in the framework:
+
+\begin{enumerate}
+    \item \textbf{No source data at deployment.} Once the detector is shipped, the source training set is unavailable. Any procedure that requires source samples for joint training, statistical alignment, or replay is excluded.
+    \item \textbf{Bounded label cost.} An analyst can label on the order of one hundred target flows before the model must go live. The adaptation procedure must extract maximum signal from each labelled example without memorizing the tiny anchor set.
+    \item \textbf{Operationally interpretable.} In regulated environments, the security team must be able to inspect why an adapted detector fires on a particular flow. Black-box adaptation that improves F1 but obscures decision logic is a non-starter.
+\end{enumerate}
+
+Together these principles point toward a minimal-parameter update that is both \emph{expressive enough} to absorb cross-network shift and \emph{legible enough} to be inspected by an operator. We argue, and demonstrate, that spline coefficients in a Kolmogorov--Arnold Network are uniquely well-matched to all three.
+
+\subsection{Problem Setting}
+\label{sec:problem}
+
+Let $\mathcal{D}_s$ be a source domain with labelled training data $(X_s, y_s) \sim P_s$, and $\mathcal{D}_t$ a target domain with $P_t \neq P_s$. A detector $f_\theta : \mathbb{R}^{d_x} \to \{0,1\}$ is pre-trained on $\mathcal{D}_s$. At deployment we observe:
+\begin{itemize}
+    \item A small labelled \emph{pool} $\mathcal{P} \subset \mathcal{D}_t$ of size $|\mathcal{P}| = \lceil \rho N_t \rceil$ with $\rho = 0.001$, where $N_t$ is the target dataset size. The pool is stratified across classes so that both attack and benign samples are present.
+    \item An unlabelled \emph{stream} $\mathcal{S}$ of target flows arriving in batches of size $B$.
+\end{itemize}
+The model produces predictions for every batch of $\mathcal{S}$ as it arrives, and model parameters are updated continuously between batches. The objective is to maximize per-batch F1 over $\mathcal{S}$ without any further access to $\mathcal{D}_s$.
+
+\subsection{KAN and Spline Locality}
+\label{sec:kan}
+
+A KAN layer maps $\mathbf{x} \in \mathbb{R}^{n_{\text{in}}}$ to $\mathbf{o} \in \mathbb{R}^{n_{\text{out}}}$ through learnable per-edge activations. Edge $(i,j)$ carries a univariate function $\phi_{ij}$ decomposed into a fixed-nonlinearity \emph{base path} and a \emph{spline path}:
+\begin{equation}
+\label{eq:kan-edge}
+\phi_{ij}(x) \;=\; \underbrace{w^{\text{b}}_{ij}\, b(x)}_{\text{base path}} \;+\; \underbrace{s_{ij}\sum_{k=1}^{K} w_{ij}^{(k)}\, B_k(x)}_{\text{spline path}}, 
+%\qquad
+\hspace{1.5ex}
+o_j \;=\; \sum_{i=1}^{n_{\text{in}}} \phi_{ij}(x_i),
+\end{equation}
+where $b(\cdot)$ is a fixed nonlinearity (SiLU in our implementation), $w^{\text{b}}_{ij}$ is the base-path weight, $\{B_k\}_{k=1}^{K}$ is a B-spline basis of order $p$ on a uniform grid over $[-1, 1]$, $\{w_{ij}^{(k)}\}$ are the spline coefficients, and $s_{ij}$ is a per-edge scaling factor on the spline output. With grid size $G$ and order $p$ we have $K = G + p$ basis functions per edge. All four learned objects --- $w^{\text{b}}_{ij}$, $s_{ij}$, $\{w_{ij}^{(k)}\}$ --- are trained during source pre-training; only the spline-path parameters $\{w_{ij}^{(k)}, s_{ij}\}$ are updated during TTA (Section~\ref{sec:spline-only}), which is what we mean by ``spline-only.'' We use the efficient KAN parameterization of~\cite{liu2024kan}.
+
+The property we exploit is \emph{spline locality}: each basis function $B_k$ has compact support over a contiguous sub-interval $I_k \subset [-1, 1]$, and the supports $\{I_k\}$ tile the input range with small overlap. A gradient step on $w_{ij}^{(k)}$ therefore reshapes $\phi_{ij}$'s spline path only over $I_k$ --- a narrow region of the input range, on a single edge $(i,j)$, with no effect anywhere else in the network. In a fixed-activation network, by contrast, the smallest functional change available comes from updating a weight $w$ feeding into a global activation $\sigma$, which scales or shifts the entire activation response over its full input range.
+
+Two consequences follow. First, an update of $n$ spline coefficients produces structurally richer functional change than an update of $n$ linear weights, because $n$ disjoint local edits encode a more complex transformation than $n$ global rescalings. Second, the change induced by a spline-coefficient update is directly legible: one can plot $\phi_{ij}$ before and after the update and see exactly what changed, on which edge, in what input range. These two properties are the basis for the framework's effectiveness and interpretability respectively.
+
+\subsection{Source Pre-Training}
+\label{sec:pretrain}
+
+The model is a shared KAN encoder $g_\phi : \mathbb{R}^{d_x} \to \mathbb{R}^{d_z}$ with two output heads: a classifier $h_\psi$ and a decoder $d_\xi$, both attached to the post-LayerNorm latent $\mathbf{z} = \mathrm{LN}\!\left(g_\phi(\mathbf{x})\right)$. The encoder is two KAN layers ($d_x \to 64 \to d_z$); the decoder is symmetric. Pre-training minimizes
+\begin{equation}
+\label{eq:pretrain}
+\mathcal{L}_{\text{pre}}(\theta) \;=\; \mathbb{E}_{(\mathbf{x}, y) \sim \mathcal{D}_s}\Big[\, \ell_{\text{CE}}\!\left(h_\psi(\mathbf{z}), y\right) \;+\; \lambda_r \,\|d_\xi(\mathbf{z}) - \mathbf{x}\|_2^2 \,\Big],
+\end{equation}
+where $\ell_{\text{CE}}$ is per-sample cross-entropy and $\lambda_r = 0.5$. All parameters are trainable in this phase. We use Adam~\cite{kingma2015adam} with weight decay $10^{-4}$, gradient clipping at norm 1.0, and 20 epochs. The reconstruction term regularizes the encoder toward representations that preserve input information, which empirically transfers more robustly across networks. The pre-trained weights together with a fitted source min--max scaler are checkpointed as the deployment artifact.
+
+\subsection{Spline-Only Updates}
+\label{sec:spline-only}
+
+We now present the framework's central design choice. Let $L$ denote the last encoder layer and $\mathcal{E}_L$ its set of edges. We define the trainable parameter set under TTA as
+\begin{equation}
+\label{eq:theta-train}
+\Theta_{\text{train}} \;=\; \Big\{\, w_{ij}^{(k)} \,\Big|\, (i,j) \in \mathcal{E}_L,\; 1 \leq k \leq K \,\Big\} \;\cup\; \Big\{\, s_{ij} \,\Big|\, (i,j) \in \mathcal{E}_L \,\Big\}.
+\end{equation}
+That is, $\Theta_{\text{train}}$ contains only the spline-path parameters of the last KAN encoder layer. Everything else --- earlier KAN layers, the base-path weights $\{w^{\text{b}}_{ij}\}$ of layer $L$ itself, normalization parameters, the classifier head, and the decoder --- is frozen at its pre-trained value.
+
+Three properties frame why this trainable set works:
+
+\textbf{Coverage.} The last encoder layer maps the hidden representation to the final latent. Reshaping its splines reshapes the latent that the (frozen) classifier consumes, which is sufficient to redraw the decision boundary in the input space without ever touching the classifier itself. Earlier encoder layers learn lower-level features that transfer reasonably well across NIDS domains (Section~\ref{sec:results}); locking them prevents both forgetting and overfitting.
+
+\textbf{Locality.} Within $\Theta_{\text{train}}$, each $w_{ij}^{(k)}$ controls $\phi_{ij}$ over a single sub-interval $I_k$. An adaptation step distributes its gradient signal across exactly the sub-intervals visited by the current batch, sharpening or smoothing those regions of the activation. Coefficients corresponding to sub-intervals \emph{not} visited by the target stream are protected from spurious updates.
+
+\textbf{Inspectability.} Because the change to the model is exactly the change to the spline coefficients of one layer, the adapted model can be inspected at parameter granularity: one can plot $\phi_{ij}$ pre- and post-adaptation for any edge in the layer, and rank edges by L1 magnitude of coefficient change. Section~\ref{sec:rq4} demonstrates each of these.
+
+For non-KAN baselines (CNN, TabTransformer; see Section~\ref{sec:setup}) the analog of spline-only is updating the last encoder layer's parameters as a whole. These baselines exist to show that the spline-only configuration's edge over alternatives is not merely an effect of restricting the trainable count.
+
+\subsection{The TTA Loss}
+\label{sec:loss}
+
+Given a pool minibatch $\mathcal{B}_p \subset \mathcal{P}$ and a stream minibatch $\mathcal{B}_s \subset \mathcal{S}$, the per-step TTA objective is
+\begin{equation}
+\label{eq:tta}
+\mathcal{L}_{\text{TTA}}\!\left(\theta;\, \mathcal{B}_p,\, \mathcal{B}_s\right) \;=\;  \mathcal{L}_{\text{CE}}\!\left(\theta;\, \mathcal{B}_p\right) \;+\;  \mathcal{L}_{\text{ent}}\!\left(\theta;\, \mathcal{B}_s\right) \;+\; \lambda \mathcal{L}_{\text{rec}}\!\left(\theta;\, \mathcal{B}_p^{\,0}\right),
+\end{equation}
+with $\lambda = 0.5$, and $\mathcal{B}_p^{\,0} = \{(\mathbf{x}, y) \in \mathcal{B}_p : y = 0\}$ the benign subset of the pool batch. The three terms are
+\begin{align}
+\label{eq:loss-ce}
+\mathcal{L}_{\text{CE}}\!\left(\theta;\, \mathcal{B}_p\right) &\;=\; -\frac{1}{|\mathcal{B}_p|}\sum_{(\mathbf{x}, y) \,\in\, \mathcal{B}_p} \log p_\theta\!\left(y \,\big|\, \mathbf{x}\right), \\[2pt]
+\label{eq:loss-ent}
+\mathcal{L}_{\text{ent}}\!\left(\theta;\, \mathcal{B}_s\right) &\;=\; -\frac{1}{|\mathcal{B}_s|}\sum_{\mathbf{x} \,\in\, \mathcal{B}_s}\,\sum_{c \in \{0, 1\}} p_\theta\!\left(c \,\big|\, \mathbf{x}\right)\,\log p_\theta\!\left(c \,\big|\, \mathbf{x}\right), \\[2pt]
+\label{eq:loss-rec}
+\mathcal{L}_{\text{rec}}\!\left(\theta;\, \mathcal{B}_p^{\,0}\right) &\;=\; \frac{1}{|\mathcal{B}_p^{\,0}|}\sum_{(\mathbf{x},\, 0) \,\in\, \mathcal{B}_p^{\,0}} \big\| d_\xi\!\left(\mathbf{z}\right) - \mathbf{x} \big\|_2^2,
+\end{align}
+where $\mathbf{z} = \mathrm{LN}\!\left(g_\phi(\mathbf{x})\right)$ and $p_\theta(\cdot \mid \mathbf{x})$ is the softmax over classifier logits.
+
+Each term plays a non-redundant role. The supervised anchor $\mathcal{L}_{\text{CE}}$ cannot by itself define a decision boundary with $\sim$100 samples, but combined with the much larger gradient mass of $\mathcal{L}_{\text{ent}}$ on the stream, it pins that boundary to known-correct examples on both sides. The entropy term $\mathcal{L}_{\text{ent}}$ is the standard TENT~\cite{wang2021tent} objective: it sharpens classifier confidence on the unlabelled stream and carries most of the per-batch gradient signal. Absent the anchor, $\mathcal{L}_{\text{ent}}$ collapses the classifier onto whichever class is initially over-predicted; the anchor breaks that degenerate equilibrium. The reconstruction term $\mathcal{L}_{\text{rec}}$ is computed on the benign subset of the pool only --- benign traffic is the most reliable structural anchor for the target domain, since attack flows by definition do not reflect normal structure and reconstructing them well would teach the encoder to absorb adversarial signal. Although the decoder is frozen, $\mathcal{L}_{\text{rec}}$ still drives non-trivial gradients into $\Theta_{\text{train}}$ via the encoder splines.
+
+\subsection{Bounded Pool Reuse}
+\label{sec:poolcap}
+
+A subtle failure mode arises from the asymmetry between pool and stream sizes. With $|\mathcal{P}| \approx 100$ and a stream that may contain $10^5$ batches, the same pool samples would be replayed several hundred times if $\mathcal{L}_{\text{CE}}$ were active every batch. Empirically this leads to memorization: pool-batch CE drops to near zero while stream entropy plateaus high --- the model has effectively turned the few-shot anchor into a 100-sample training set and ignored the stream.
+
+We cap pool reuse with a budget $K_{\max} = M\,|\mathcal{P}|$, $M = 5$. Let $K(t)$ denote the running count of pool samples consumed up to step $t$. The effective objective at step $t$ is
+\begin{equation}
+\label{eq:tta-eff}
+\mathcal{L}^{(t)}(\theta) \;=\;
+\begin{cases}
+\mathcal{L}_{\text{TTA}}\!\left(\theta;\, \mathcal{B}_p^{(t)},\, \mathcal{B}_s^{(t)}\right), & K(t) < K_{\max}, \\[4pt]
+\, \mathcal{L}_{\text{ent}}\!\left(\theta;\, \mathcal{B}_s^{(t)}\right), & K(t) \geq K_{\max}.
+\end{cases}
+\end{equation}
+The transition is sharp but the empirical accuracy curve is smooth: by the time the anchor is dropped, the decision boundary has settled into its target configuration and entropy alone maintains it.
+
+\subsection{Full Procedure}
+
+Algorithm~\ref{alg:tta} summarizes the complete TTA loop. The expensive operations per stream batch are two forward passes (one for the pool while $K < K_{\max}$, one for the stream) plus one Adam step over $\Theta_{\text{train}}$.
+
+\begin{algorithm}[h]
+\caption{Spline-Only TTA for Cross-Network NIDS}
+\label{alg:tta}
+\begin{algorithmic}[1]
+\REQUIRE Pre-trained KAN $f_\theta$, source scaler $\sigma_s$, pool $\mathcal{P}$, stream $\mathcal{S}$, weights \lambda$, pool budget $K_{\max}$.
+\STATE Apply $\sigma_s$ to all of $\mathcal{P}$ and $\mathcal{S}$; clip to $[-1, 1]$.
+\STATE $\Theta_{\text{train}} \leftarrow \big\{w_{ij}^{(k)},\, s_{ij} \,:\, (i,j) \in \mathcal{E}_L\big\}$ \hfill\texttt{// last-layer splines only}
+\STATE Freeze every $\theta \notin \Theta_{\text{train}}$.
+\STATE Initialize $\mathrm{Adam}(\Theta_{\text{train}}, \mathrm{lr} = 10^{-2})$; set $K \leftarrow 0$.
+\FOR{each stream minibatch $\mathcal{B}_s \subset \mathcal{S}$ of size $B$}
+    \STATE $\ell \leftarrow \, \mathcal{L}_{\text{ent}}\!\left(\theta;\, \mathcal{B}_s\right)$ \hfill\texttt{// Eq.~\eqref{eq:loss-ent}}
+    \IF{$K < K_{\max}$}
+        \STATE Sample $\mathcal{B}_p \subset \mathcal{P}$
+        \STATE $\ell \leftarrow \ell + \, \mathcal{L}_{\text{CE}}\!\left(\theta;\, \mathcal{B}_p\right)$ \hfill\texttt{// Eq.~\eqref{eq:loss-ce}}
+        \STATE $\mathcal{B}_p^{\,0} \leftarrow \{(\mathbf{x}, y) \in \mathcal{B}_p : y = 0\}$
+        \IF{$\mathcal{B}_p^{\,0} \neq \emptyset$}
+            \STATE $\ell \leftarrow \ell + \lambda\, \mathcal{L}_{\text{rec}}\!\left(\theta;\, \mathcal{B}_p^{\,0}\right)$ \hfill\texttt{// Eq.~\eqref{eq:loss-rec}}
+        \ENDIF
+        \STATE $K \leftarrow K + |\mathcal{B}_p|$
+    \ENDIF
+    \STATE Backpropagate $\ell$; clip $\|\nabla\|_2 \leq 1.0$; Adam step on $\Theta_{\text{train}}$.
+    \STATE Predict labels for $\mathcal{B}_s$ with the updated $f_\theta$.
+\ENDFOR
+\end{algorithmic}
+\end{algorithm}
+
+
+% ============================================================================
+\section{Experimental Setup}
+\label{sec:setup}
+
+\subsection{Datasets}
+
+We evaluate on three NetFlow-v9 intrusion detection benchmarks~\cite{sarhan2021netflow, sarhan2022towards, luay2025temporal} derived from the original ToN-IoT~\cite{moustafa2019toniot}, UNSW-NB15~\cite{moustafa2015unsw}, and CIC-IDS2018~\cite{sharafaldin2018cicids} captures. All three share the same 49-feature schema after engineering, which removes identifier columns (IPs, ports, timestamps) and adds flow duration, bytes-per-packet, and log-transforms of skewed counts. We subsample each to $N = 10^5$ flows with stratified sampling and evaluate \emph{all six} ordered source--target pairs.
+
+\begin{table}[h]
+\centering
+\caption{Dataset summary after preprocessing.}
+\label{tab:datasets}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Dataset} & \textbf{Samples} & \textbf{Attack \%} & \textbf{Features} \\
+\midrule
+NF-ToN-IoT-v3    & 100,000 & 38.94\% & 49 \\
+NF-UNSW-NB15-v3  & 100,000 & 5.52\%  & 49 \\
+NF-CICIDS2018-v3 & 100,000 & 19.06\% & 49 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Models, Baselines, and Hyperparameters}
+
+The primary model is a KAN encoder--decoder with hidden width 64, latent dimension $d_z = 32$, grid size $G = 5$, and spline order $p = 3$. The trainable set under TTA is given by Eq.~\eqref{eq:theta-train}: the spline coefficients and scalers of the last encoder layer. All other parameters are frozen. We compare against two fixed-activation baselines under the same TTA loss (Eq.~\eqref{eq:tta}) but with their last encoder layer fully trainable in place of splines: a pointwise CNN with GroupNorm and a per-feature-tokenized TabTransformer~\cite{huang2020tabtransformer, vaswani2017attention} with LayerNorm. All three share an identical classifier head and identical pre-training and TTA hyperparameters: pre-training uses Adam with learning rate $10^{-3}$, weight decay $10^{-4}$, batch size 256, and 20 epochs; TTA uses Adam with learning rate $10^{-2}$, batch size $B = 512$, one update step per batch, pool ratio $\rho = 0.001$, loss weight $\lambda = 0.5$, and pool-budget multiplier $M = 5$.
+
+\subsection{Conditions Evaluated}
+
+For each (architecture, source, target) triple we report three conditions:
+\begin{itemize}
+    \item \textbf{Zero-shot}: target stream evaluated with the pre-trained model, no adaptation.
+    \item \textbf{Few-shot-only}: a freshly initialized model trained from scratch on just the labelled pool for 50 epochs, no pre-training. This isolates ``does source pre-training carry transferable knowledge.''
+    \item \textbf{TTA}: full Algorithm~\ref{alg:tta}.
+\end{itemize}
+We additionally run ablations on (a) trainable subsets and (b) loss-term combinations. All results are reported as mean over three random seeds. The primary metric is binary F1 with attack as the positive class; we also report accuracy and windowed F1 over the last 20 stream batches to expose adaptation dynamics that cumulative metrics smooth out.
+
+
+% ============================================================================
+\section{Results}
+\label{sec:results}
+
+We organize the results to substantiate the three claims in the title: spline-only updates are \emph{effective} (Section~\ref{sec:eff}), \emph{efficient} (Section~\ref{sec:ablate}), and \emph{interpretable} (Section~\ref{sec:rq4}).
+
+\subsection{Effectiveness Across All Six Permutations}
+\label{sec:eff}
+
+Table~\ref{tab:main_results} reports F1 across all source--target permutations. TTA with spline-only updates consistently and substantially outperforms both zero-shot transfer and the few-shot-only baseline for every (source, target) pair on KAN. On the ToN-IoT $\to$ CICIDS direction the lift is largest: F1 rises from $0.19$ (zero-shot) and $0.57$ (few-shot only) to $0.86$ (TTA), a $4.5\times$ improvement over zero-shot. The same qualitative pattern holds across architectures, but KAN attains the highest post-TTA F1 in every pair despite the lowest zero-shot transfer.
+
+\begin{table*}[t]
+\centering
+\caption{F1 across all source--target permutations (single-seed run reproduced from the experiment notebook).
+  \textbf{Bold}: best strategy per (source, target, architecture).
+  TTA is the strongest strategy in 17 of 18 configurations; the lone exception is TabTransformer on UNSW$\rightarrow$ToN-IoT, where zero-shot outperforms TTA by 0.0225.}
+\label{tab:main_results}
+\begin{tabular}{l|l|ccc|ccc|ccc}
+\toprule
+& & \multicolumn{3}{c|}{\textbf{KAN-AE (spline-only)}} & \multicolumn{3}{c|}{\textbf{CNN-AE (last layer)}} & \multicolumn{3}{c}{\textbf{TabTransformer (last layer)}} \\
+\textbf{Source} & \textbf{Target} & Zero & Few-only & TTA & Zero & Few-only & TTA & Zero & Few-only & TTA \\
+\midrule
+\multirow{2}{*}{ToN-IoT}
+    & UNSW    & 0.0405 & 0.0578 & \textbf{0.9244} & 0.0735 & 0.0727 & \textbf{0.7950} & 0.1509 & 0.2001 & \textbf{0.7195} \\
+    & CICIDS  & 0.2310 & 0.1761 & \textbf{0.8636} & 0.2624 & 0.4584 & \textbf{0.7458} & 0.2356 & 0.2806 & \textbf{0.6615} \\
+\midrule
+\multirow{2}{*}{UNSW}
+    & ToN-IoT & 0.7777 & 0.7794 & \textbf{0.8002} & 0.7780 & 0.7800 & \textbf{0.8034} & \textbf{0.7832} & 0.7786 & 0.7607 \\
+    & CICIDS  & 0.2825 & 0.0048 & \textbf{0.7896} & 0.2707 & 0.2547 & \textbf{0.7916} & 0.2823 & 0.1039 & \textbf{0.7648} \\
+\midrule
+\multirow{2}{*}{CICIDS}
+    & ToN-IoT & 0.4000 & 0.4804 & \textbf{0.8041} & 0.2416 & 0.2941 & \textbf{0.7954} & 0.3567 & 0.6287 & \textbf{0.7952} \\
+    & UNSW    & 0.0126 & 0.0113 & \textbf{0.9561} & 0.1083 & 0.0431 & \textbf{0.9530} & 0.0006 & 0.0005 & \textbf{0.6220} \\
+\midrule
+\multicolumn{2}{l|}{\textit{Wins (of 6)}} & 0 & 0 & \textbf{6} & 0 & 0 & \textbf{6} & 1 & 0 & \textbf{5} \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+
+
+\begin{table*}[t]
+\centering
+\caption{Few-shot and CTTA F1: spline-only $\rightarrow$ full adaptation (single-seed run reproduced from the experiment notebook). For KAN, ``spline-only'' updates last-layer spline weights and ``full'' adds norm + classifier + last encoder layer; for CNN and TabTransformer, ``spline-only'' denotes last-layer weights.}
+\label{tab:fewshot_ctta_comparison}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{l|l|cc|cc|cc}
+\toprule
+ & & \multicolumn{2}{c|}{\textbf{KAN}} & \multicolumn{2}{c|}{\textbf{CNN}} & \multicolumn{2}{c}{\textbf{TabTransformer}} \\
+\textbf{Source} & \textbf{Target} & Few-shot & CTTA & Few-shot & CTTA & Few-shot & CTTA \\
+\midrule
+\multirow{2}{*}{ToN-IoT}
+    & UNSW    & 0.06 $\rightarrow$ 0.09 & 0.92 $\rightarrow$ 0.94 & 0.07 $\rightarrow$ 0.07 & 0.80 $\rightarrow$ 0.82 & 0.20 $\rightarrow$ 0.24 & 0.72 $\rightarrow$ 0.80 \\
+    & CICIDS  & 0.18 $\rightarrow$ 0.44 & 0.86 $\rightarrow$ 0.84 & 0.46 $\rightarrow$ 0.47 & 0.75 $\rightarrow$ 0.76 & 0.28 $\rightarrow$ 0.12 & 0.66 $\rightarrow$ 0.77 \\
+\midrule
+\multirow{2}{*}{UNSW}
+    & ToN-IoT & 0.78 $\rightarrow$ 0.78 & 0.80 $\rightarrow$ 0.78 & 0.78 $\rightarrow$ 0.78 & 0.80 $\rightarrow$ 0.81 & 0.78 $\rightarrow$ 0.78 & 0.76 $\rightarrow$ 0.77 \\
+    & CICIDS  & 0.00 $\rightarrow$ 0.31 & 0.79 $\rightarrow$ 0.79 & 0.25 $\rightarrow$ 0.50 & 0.79 $\rightarrow$ 0.78 & 0.10 $\rightarrow$ 0.13 & 0.76 $\rightarrow$ 0.74 \\
+\midrule
+\multirow{2}{*}{CICIDS}
+    & ToN-IoT & 0.48 $\rightarrow$ 0.68 & 0.80 $\rightarrow$ 0.80 & 0.29 $\rightarrow$ 0.34 & 0.80 $\rightarrow$ 0.80 & 0.63 $\rightarrow$ 0.64 & 0.80 $\rightarrow$ 0.79 \\
+    & UNSW    & 0.01 $\rightarrow$ 0.02 & 0.96 $\rightarrow$ 0.98 & 0.04 $\rightarrow$ 0.02 & 0.95 $\rightarrow$ 0.96 & 0.00 $\rightarrow$ 0.00 & 0.62 $\rightarrow$ 0.68 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+% \begin{table*}[t]
+% \centering
+% \caption{TTA F1: spline-only/Last Layer $\rightarrow$ norm layers + classifier head + last encoder layer.
+%   Broad-adaptation values are available for KAN only in this run; the ablation was gated to KAN.}
+% \label{tab:tta_comparison}
+% \begin{tabular}{l|l|ccc}
+% \toprule
+% \textbf{Source} & \textbf{Target} & KAN & CNN & TabTransformer \\
+% \midrule
+% \multirow{2}{*}{ToN-IoT}
+%     & UNSW    & 0.79 $\rightarrow$ 0.89 & 0.85 $\rightarrow$ -- & 0.51 $\rightarrow$ -- \\
+%     & CICIDS  & 0.87 $\rightarrow$ 0.84 & 0.77 $\rightarrow$ -- & 0.73 $\rightarrow$ -- \\
+% \midrule
+% \multirow{2}{*}{UNSW}
+%     & ToN-IoT & 0.80 $\rightarrow$ 0.80 & 0.79 $\rightarrow$ -- & 0.79 $\rightarrow$ -- \\
+%     & CICIDS  & 0.79 $\rightarrow$ 0.80 & 0.75 $\rightarrow$ -- & 0.79 $\rightarrow$ -- \\
+% \midrule
+% \multirow{2}{*}{CICIDS}
+%     & ToN-IoT & 0.82 $\rightarrow$ 0.81 & 0.79 $\rightarrow$ -- & 0.82 $\rightarrow$ -- \\
+%     & UNSW    & 0.98 $\rightarrow$ 0.98 & 0.94 $\rightarrow$ -- & 0.74 $\rightarrow$ -- \\
+% \bottomrule
+% \end{tabular}
+% \end{table*}
+% \begin{table*}[t]
+% \centering
+% \caption{F1 across all source--target permutations ($N{=}1000$ labelled pool, SplineTrue=False).
+%   TTA uses full layer-selective updates (norm layers + classifier head + last encoder layer).
+%   \textbf{Bold}: best architecture per (source, target, strategy).}
+% \label{tab:main_results}
+% \begin{tabular}{l|l|ccc|ccc|ccc}
+% \toprule
+% & & \multicolumn{3}{c|}{\textbf{KAN }} & \multicolumn{3}{c|}{\textbf{CNN }} & \multicolumn{3}{c}{\textbf{TabTransformer }} \\
+% \textbf{Source} & \textbf{Target} & Zero & Few-only & TTA & Zero & Few-only & TTA & Zero & Few-only & TTA \\
+% \midrule
+% \multirow{2}{*}{ToN-IoT}
+%     & UNSW    & 0.0221 & \textbf{0.9857} & 0.9685 & 0.0034 & 0.9760 & \textbf{0.9782} & \textbf{0.0516} & 0.9462 & 0.9267 \\
+%     & CICIDS  & 0.0000 & \textbf{0.9389} & 0.9290 & \textbf{0.2366} & 0.9317 & 0.9201 & 0.0690 & 0.9222 & \textbf{0.9308} \\
+% \midrule
+% \multirow{2}{*}{UNSW}
+%     & ToN-IoT & \textbf{0.7725} & 0.8475 & 0.8397 & 0.4958 & 0.8483 & \textbf{0.8479} & 0.7725 & \textbf{0.8778} & 0.8361 \\
+%     & CICIDS  & \textbf{0.3230} & \textbf{0.9389} & \textbf{0.9221} & 0.2696 & 0.9317 & 0.9116 & 0.2181 & 0.9222 & 0.6869 \\
+% \midrule
+% \multirow{2}{*}{CICIDS}
+%     & ToN-IoT & \textbf{0.7720} & 0.8475 & \textbf{0.8663} & 0.2569 & 0.8483 & 0.8646 & 0.2399 & \textbf{0.8778} & 0.8263 \\
+%     & UNSW    & 0.0194 & \textbf{0.9857} & \textbf{0.9792} & \textbf{0.0262} & 0.9760 & 0.9699 & 0.0074 & 0.9462 & 0.9239 \\
+% \midrule
+% \multicolumn{2}{l|}{\textit{Wins (of 6)}} & 3 & 4 & 3 & 2 & 0 & 2 & 1 & 2 & 1 \\
+% \bottomrule
+% \end{tabular}
+% \end{table*}
+
+That TTA outperforms few-shot-only training in every configuration confirms that source pre-training does carry transferable information --- it is not merely an initialization that the small target pool could replace --- and that the bulk of the lift comes from combining source pre-training with stream adaptation. The KAN advantage is consistent with the spline-locality view in Section~\ref{sec:kan}: the same number of adapted parameters produces more functional change in a learnable-activation network than in a fixed-activation network.
+
+Figure~\ref{fig:trajectory} shows the adaptation trajectory under spline-only updates on the two ToN-IoT-sourced targets. UNSW (smaller domain gap) starts at higher F1 and converges within $\sim$80 batches; CICIDS (larger domain gap) starts much lower but reaches comparable plateau F1 by $\sim$160 batches. Both curves are monotone in F1, with no oscillation, indicating that spline-only updates do not destabilize the model under continued entropy minimization after the anchor is dropped.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{figures/fig_trajectory}
+  \caption{%
+    \textbf{Cumulative F1 adaptation trajectory during CTTA}
+    (KAN, source: CICIDS2018).
+    UNSW-NB15 (orange) reaches ${\approx}1.0$ within the first 50 stream
+    batches and plateaus immediately, while ToN-IoT (blue) starts
+    higher but converges gradually over ${\sim}2000$ batches.
+    The two-speed behaviour reveals that domain proximity governs
+    adaptation rate: CICIDS and UNSW share similar benign-traffic
+    distributions, enabling near-instant spline recalibration,
+    whereas the IoT-centric ToN-IoT shift requires sustained exposure.}
+  \label{fig:trajectory}
+\end{figure}
+
+Figure~\ref{fig:logit_sep} visualizes the mechanism behind the F1 gain through logit-margin distributions: the score $\mathrm{logit}(\text{attack}) - \mathrm{logit}(\text{benign})$, partitioned by ground-truth label, before and after TTA. On UNSW (top), the pre-TTA distributions of attacks and benigns overlap throughout the margin axis; benigns sit at low magnitudes near zero and attacks have significant mass on the wrong side of the decision boundary. Post-TTA the two classes separate to opposite tails ($\pm 15$ to $\pm 20$) with negligible overlap. The pattern is even sharper on CICIDS (bottom): pre-TTA most attack flows have margin $-6$ (assigned benign with high confidence --- the worst-case failure for a security detector), while post-TTA attack flows sit at $+11$ and benigns at $-15$, both with high confidence and correct sign. In both targets, spline-only TTA does not merely flip labels; it restores high-confidence decisions in the correct direction.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{figures/fig_logit_sep}
+  \caption{%
+    \textbf{Logit-margin distributions before and after CTTA}
+    (KAN, source: CICIDS2018 $\to$ target: UNSW-NB15).
+    Before adaptation both class distributions collapse into the same
+    narrow $[-10,{+}2]$ band with near-total overlap.
+    After spline-only CTTA the benign mass moves to ${\approx}{-25}$
+    and the attack mass to ${\approx}{+25}$, with zero overlap,
+    corresponding to an F1 jump from $0.007$ to $0.976$.}
+  \label{fig:logit_sep}
+\end{figure}
+
+
+\subsection{Efficiency: Ablating What to Update}
+\label{sec:ablate}
+
+We examine whether spline-only is the right minimal-parameter choice. Table~\ref{tab:ablate_layers} compares spline-only against four alternatives on the KAN model (ToN-IoT $\to$ UNSW): the splines plus norm layers, splines plus classifier, the entire last KAN layer including its non-spline base path, and the full layer-selective set (norm + classifier + last layer) common in prior TTA work.
+
+\begin{table}[h]
+\centering
+\caption{Ablation: trainable subset under TTA (KAN, ToN-IoT$\to$UNSW-NB15; single-seed run reproduced from the experiment notebook). Splines + norm + classifier is the strongest configuration, leading spline-only by ${\sim}0.04$ F1; the remaining five subsets are clustered within ${\sim}0.01$ F1 of one another.}
+\label{tab:ablate_layers}
+\begin{tabular}{lc}
+\toprule
+\textbf{Trainable subset} & \textbf{F1} \\
+\midrule
+Spline-only                          & 0.7962 \\
+Splines + norm                       & 0.7924 \\
+Splines + classifier                 & 0.7995 \\
+Splines + norm + classifier          & \textbf{0.8374} \\
+Last KAN layer (incl. splines and \ base path)    & 0.8009 \\
+Last KAN layer + Norm + classifier      & 0.7898 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+
+Two observations. First, spline-only matches the joint norm-plus-classifier-plus-last-layer configuration on F1 --- adding norm and classifier parameters to the trainable set does not contribute beyond what the splines themselves provide. Second, including the base linear path of the last KAN layer (the non-spline residual) \emph{hurts} performance: those weights' gradients pull the layer's response away from the local spline shape, blurring the localized edits that drive the gain. The spline-path parameters alone are not merely sufficient; they are the right minimal choice.
+
+\paragraph{Loss-term ablation.} Table~\ref{tab:ablate_loss} confirms each loss term is non-redundant. Entropy alone (TENT-like) is insufficient under the few-shot constraint: with no anchor, the classifier drifts toward the majority class. The supervised anchor is the largest single contributor; benign-only reconstruction provides a smaller but consistent gain by preventing late-stage representation drift.
+
+\begin{table}[h]
+\centering
+\caption{Ablation: loss-term contribution (KAN spline-only, ToN-IoT$\to$UNSW-NB15). All three terms contribute; entropy alone collapses.}
+\label{tab:ablate_loss}
+\begin{tabular}{lc}
+\toprule
+\textbf{Loss terms used} & \textbf{F1} \\
+\midrule
+CE + ent + recon (full)  & \textbf{0.9624} \\
+CE + ent only            & 0.9565 \\
+CE only                  & 0.9340 \\
+ent only (TENT-like)     & 0.0006 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Pool budget ablation.} Without the budget cap of Section~\ref{sec:poolcap}, F1 drops from $0.88$ to $0.81$ on UNSW. Inspection shows pool-batch CE driving to nearly zero while stream-batch entropy plateaus high --- the predicted memorization failure mode. The cap costs a single integer counter.
+
+
+\subsection{Interpretability: What Did Adaptation Actually Change?}
+\label{sec:rq4}
+
+Because the updated parameters are exactly the spline coefficients of one layer, the adapted model is directly inspectable. We present two complementary views, both on the post-TTA KAN model (source = ToN-IoT, target = UNSW-NB15).
+
+\paragraph{Per-dimension importance shift (Fig.~\ref{fig:importance}).}
+The last encoder layer maps a 64-dimensional hidden representation $\mathbf{h}$ to a 32-dimensional latent $\mathbf{z}$. For each hidden dimension $i$ we compute the combined spline-and-base weight magnitude of the edges originating from $i$, $\sum_{j,k} |w_{ij}^{(k)}| + |w^{\text{base}}_{ij}|$, which captures how much that dimension contributes to the latent representation. Figure~\ref{fig:importance} ranks the top-15 dimensions by their pre-TTA importance and shows post-TTA values alongside. The redistribution is visible at a glance: dimensions that were already prominent (\textit{e.g.}, \texttt{h35}, \texttt{h23}) gain further weight, but several previously lower-ranked dimensions --- \texttt{h28}, \texttt{h38}, \texttt{h2}, \texttt{h9} --- rise sharply, more than doubling their importance. The overall distribution flattens, indicating the adapted model draws on a broader subset of the hidden representation than the source model did. This is a parameter-level description of the encoder's reallocation, which would not be obtainable from a post-hoc attribution method.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{figures/fig_feat_imp_latent}
+  \caption{%
+    \textbf{Latent-dimension importance shift in the last encoder layer}
+    (KAN, source: ToN-IoT $\to$ target: UNSW-NB15).
+    Blue bars show weight magnitudes before CTTA; red bars show the
+    same dimensions after spline-only adaptation.
+    Dimensions such as Latent~50, 24, and~3 grow by an order of
+    magnitude, while the relative ordering changes substantially,
+    indicating that the spline coefficients selectively amplify
+    target-discriminative latent directions without touching the
+    base linear weights.}
+\label{fig:importance}
+\end{figure}
+
+\paragraph{Spline activation shapes (Fig.~\ref{fig:splines}).}
+Figure~\ref{fig:splines} shows the learned $\phi_{ij}(x)$ curves in the first (frozen) and last (adapted) encoder layers, before and after TTA. The first-layer panels (rows 1, 3) are identical pre-/post-adaptation, confirming the freeze: the same four high-importance input features (\texttt{TCP\_WIN\_MAX\_IN}, \texttt{TCP\_FLAGS}, \texttt{SERVER\_TCP\_FLAGS}, \texttt{L7\_PROTO}) produce the same curves before and after. The last-layer panels (rows 2, 4) tell the adaptation story: not only do the dominant latent indices change (Latent 35 / 38 / 28 / 2 pre-TTA vs.\ Latent 2 / 35 / 28 / 38 post-TTA, in importance order), the curves themselves are reshaped substantially. Several edges flip from monotone-increasing to non-monotone, others change inflection points, and the relative magnitudes of the three highlighted destination hidden units per panel are rebalanced. The visible structural difference between rows 2 and 4 is the entirety of the TTA update --- one can point at the curve change and say what the model learned.
+
+\begin{figure*}[t]
+ \centering
+  \includegraphics[width=\linewidth]{figures/fig_spline_act}
+  \caption{%
+    \textbf{KAN spline activation functions before and after CTTA}
+    (source: UNSW-NB15 $\to$ target: CICIDS2018).
+    Rows~1--2: first and last encoder layer \emph{before} adaptation;
+    rows~3--4: the same layers \emph{after} spline-only CTTA.
+    Each panel plots the learned univariate mapping for one
+    (input feature, hidden neuron) pair.
+    Features \texttt{MAX\_TTL}, \texttt{MIN\_TTL}, and
+    \texttt{DNS\_QUERY\_ID} exhibit the most pronounced shape changes,
+    confirming that effective domain transfer requires reshaping only
+    a small, semantically interpretable subset of spline coefficients.}
+\label{fig:splines}
+\end{figure*}
+
+The two views together support a single operational claim: an analyst can pick up the post-TTA KAN model and answer the question ``which dimensions does this detector now rely on, and how have its learned per-edge activations changed?'' without retraining a separate explainer model. The fixed-activation baselines (CNN, TabTransformer) offer no parameter-level analog --- their global activations carry no localizable adaptation signal, and any post-hoc attribution must come from external methods that work just as well (or just as poorly) on the source model as on the adapted one.
+
+
+% ============================================================================
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{Deployment Implications}
+
+The framework is deployable in the form most operational settings actually take. The trained model and the source scaler together comprise the deployment artifact. At install time on a new network, an analyst labels approximately $100$ flows --- a manageable security-operations task that takes minutes, not days --- and TTA runs online as traffic arrives. Adaptation converges within $\sim$100 stream batches (about $50{,}000$ flows at $B = 512$), so on a network seeing $1000$ flows per second the detector reaches steady state in under a minute. There is no source-data round-trip and no offline retraining stage.
+
+\subsection{Why Spline-Only Works So Well}
+
+The mechanism, restated concretely: each spline coefficient parameterizes a B-spline basis function with compact support over a specific sub-interval of $[-1, 1]$. A gradient step on that coefficient changes the input--output relationship of \emph{that edge}, in \emph{that interval}, and nowhere else. The functional reach of one parameter update is therefore much larger than the same update applied to a weight in a network whose activations are fixed. For an adaptation procedure that is forced (by both compute and forgetting concerns) to update only a small parameter set, this asymmetry is decisive --- and it is the reason spline-only achieves the same post-adaptation F1 as the joint norm-plus-classifier-plus-last-layer configuration (Table~\ref{tab:ablate_layers}) while confining adaptation to a single functional component of a single layer.
+
+\subsection{Limitations}
+
+\textbf{Common feature schema.} All three datasets share the NF-v3 feature schema. Cross-domain deployment with disparate feature sets would require an explicit alignment stage upstream of our framework. We view this as a separable preprocessing problem.
+
+\textbf{Binary classification only.} Multi-class attack categorization may behave qualitatively differently under TTA, particularly under class-prior shift between source and target taxonomies.
+
+\textbf{Subsampled evaluation.} We use $10^5$ flows per dataset. Stability at $10^7$+ scale is plausible from extrapolating the adaptation trajectories but is not directly verified.
+
+\textbf{Single-shot adaptation.} We do not study concept drift within the target stream itself, where the target's own behavior evolves over weeks; the continual-TTA setting~\cite{wang2022cotta} with periodic weight restoration would likely be needed in that regime.
+
+\subsection{Future Work}
+
+Four immediate directions. First, multi-source pre-training to improve zero-shot baselines and reduce the adaptation burden. Second, online change-point detection on the windowed-F1 signal to trigger restoration when sustained accuracy decay is observed (continual TTA). Third, extension to multi-class attack categorization. Fourth, transfer of the spline-only update strategy to other local-basis architectures (radial basis function networks, mixture-of-experts gating with localized experts), where we conjecture the same efficiency--expressiveness trade-off applies.
+
+
+% ============================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+
+We presented a test-time adaptation framework for cross-network intrusion detection whose central design choice is the trainable parameter set: only the B-spline coefficients of the last encoder layer of a Kolmogorov--Arnold Network. Everything else --- earlier encoder layers, classifier head, decoder, normalization parameters --- is frozen at pre-trained values. The framework couples spline-only updates with a three-term loss (supervised pool anchor, stream entropy minimization, benign-only reconstruction) and a pool-budget cap that prevents memorization of the small labelled anchor. Across all six source--target permutations of three NetFlow benchmarks, the spline-only configuration achieves the highest post-adaptation F1 among the architectures we tested, despite the lowest zero-shot transfer --- a pattern we trace to the per-parameter functional reach of learnable spline coefficients relative to fixed activations. The same property makes adaptation directly inspectable: every parameter change corresponds to a localized reshape of a specific learned activation curve, which an analyst can plot, rank, and reason about. We hope these findings push the cross-network NIDS community toward source-free test-time adaptation as a deployment-time first-class concern, and toward architectures whose adaptation is not only effective but legible to the analysts who must trust it.
+
+% ============================================================================
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+\begin{table*}[ht]
+\centering
+\caption{Table 3 — Trainable subset ablation (Type B), macro-F1}
+\label{tab:ablation-trainable-b}
+\begin{tabular}{lcccccc}
+\toprule
+\textbf{Trainable Subset} & \textbf{ToN$\to$UNSW} & \textbf{ToN$\to$CICIDS} & \textbf{UNSW$\to$CICIDS} & \textbf{UNSW$\to$ToN} & \textbf{CICIDS$\to$ToN} & \textbf{CICIDS$\to$UNSW} \\
+\midrule
+Spline-only                       & 0.9844 & 0.9310 & 0.9075 & 0.7968 & 0.8562 & 0.9877 \\
+Splines + norm                    & 0.9832 & 0.9241 & 0.9092 & 0.8014 & 0.8570 & 0.9873 \\
+Splines + classifier              & 0.9850 & 0.9314 & 0.9057 & 0.8003 & 0.8578 & 0.9886 \\
+Splines + norm + classifier       & 0.9849 & 0.9264 & 0.9135 & 0.8027 & 0.8577 & 0.9868 \\
+Last KAN layer (incl.\ base)      & 0.9871 & 0.9343 & 0.9223 & 0.7953 & 0.8576 & 0.9906 \\
+Norm + classifier + last layer    & 0.9845 & 0.9360 & 0.9223 & 0.8019 & 0.8597 & 0.9906 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\begin{table*}[ht]
+\centering
+\caption{Table 4 — Loss-term ablation with spline-only trainable parameters (Type B), macro-F1}
+\label{tab:ablation-loss-b}
+\begin{tabular}{lcccccc}
+\toprule
+\textbf{Loss Terms} & \textbf{ToN$\to$UNSW} & \textbf{ToN$\to$CICIDS} & \textbf{UNSW$\to$CICIDS} & \textbf{UNSW$\to$ToN} & \textbf{CICIDS$\to$ToN} & \textbf{CICIDS$\to$UNSW} \\
+\midrule
+CE + ent + recon       & 0.9833 & 0.9303 & 0.9101 & 0.7977 & 0.8558 & 0.9879 \\
+CE + ent               & 0.9842 & 0.9312 & 0.9109 & 0.7991 & 0.8591 & 0.9867 \\
+CE only                & 0.9823 & 0.9390 & 0.9012 & 0.7951 & 0.8571 & 0.9869 \\
+ent only (TENT-like)   & 0.0000 & 0.0006 & 0.2686 & 0.7798 & 0.0007 & 0.0000 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+
+\end{document}

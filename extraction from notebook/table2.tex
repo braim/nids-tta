@@ -1,0 +1,27 @@
+\begin{table*}[t]
+\centering
+\caption{F1 across all source--target permutations (single-seed run reproduced from the experiment notebook).
+  \textbf{Bold}: best strategy per (source, target, architecture).
+  TTA is the strongest strategy in 17 of 18 configurations; the lone exception is TabTransformer on UNSW$\rightarrow$ToN-IoT, where zero-shot outperforms TTA by 0.0225.}
+\label{tab:main_results}
+\begin{tabular}{l|l|ccc|ccc|ccc}
+\toprule
+& & \multicolumn{3}{c|}{\textbf{KAN-AE (spline-only)}} & \multicolumn{3}{c|}{\textbf{CNN-AE (last layer)}} & \multicolumn{3}{c}{\textbf{TabTransformer (last layer)}} \\
+\textbf{Source} & \textbf{Target} & Zero & Few-only & TTA & Zero & Few-only & TTA & Zero & Few-only & TTA \\
+\midrule
+\multirow{2}{*}{ToN-IoT}
+    & UNSW    & 0.0405 & 0.0578 & \textbf{0.9244} & 0.0735 & 0.0727 & \textbf{0.7950} & 0.1509 & 0.2001 & \textbf{0.7195} \\
+    & CICIDS  & 0.2310 & 0.1761 & \textbf{0.8636} & 0.2624 & 0.4584 & \textbf{0.7458} & 0.2356 & 0.2806 & \textbf{0.6615} \\
+\midrule
+\multirow{2}{*}{UNSW}
+    & ToN-IoT & 0.7777 & 0.7794 & \textbf{0.8002} & 0.7780 & 0.7800 & \textbf{0.8034} & \textbf{0.7832} & 0.7786 & 0.7607 \\
+    & CICIDS  & 0.2825 & 0.0048 & \textbf{0.7896} & 0.2707 & 0.2547 & \textbf{0.7916} & 0.2823 & 0.1039 & \textbf{0.7648} \\
+\midrule
+\multirow{2}{*}{CICIDS}
+    & ToN-IoT & 0.4000 & 0.4804 & \textbf{0.8041} & 0.2416 & 0.2941 & \textbf{0.7954} & 0.3567 & 0.6287 & \textbf{0.7952} \\
+    & UNSW    & 0.0126 & 0.0113 & \textbf{0.9561} & 0.1083 & 0.0431 & \textbf{0.9530} & 0.0006 & 0.0005 & \textbf{0.6220} \\
+\midrule
+\multicolumn{2}{l|}{\textit{Wins (of 6)}} & 0 & 0 & \textbf{6} & 0 & 0 & \textbf{6} & 1 & 0 & \textbf{5} \\
+\bottomrule
+\end{tabular}
+\end{table*}
