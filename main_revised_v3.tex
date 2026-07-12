@@ -276,7 +276,7 @@ We organize the results to substantiate the three claims in the title: spline-on
 \subsection{Effectiveness Across All Six Permutations}
 \label{sec:eff}
 
-Table~\ref{tab:main_results} reports F1 across all source--target permutations. TTA with spline-only updates consistently and substantially outperforms both zero-shot transfer and the few-shot-only baseline for every (source, target) pair on KAN. On the ToN-IoT $\to$ CICIDS direction the lift is largest: F1 rises from $0.19$ (zero-shot) and $0.57$ (few-shot only) to $0.86$ (TTA), a $4.5\times$ improvement over zero-shot. The same qualitative pattern holds across architectures, but KAN attains the highest post-TTA F1 in every pair despite the lowest zero-shot transfer.
+Table~\ref{tab:main_results} reports F1 across all source--target permutations. TTA with spline-only updates consistently and substantially outperforms both zero-shot transfer and the few-shot-only baseline for every (source, target) pair on KAN. On the CICIDS $\to$ UNSW direction the lift is largest: F1 rises from $0.013$ (zero-shot) and $0.005$ (few-shot only) to $0.956$ (TTA), a $76\times$ improvement over zero-shot. The same qualitative pattern holds across architectures, but KAN attains the highest post-TTA F1 in every pair despite the lowest zero-shot transfer.
 
 \begin{table*}[t]
 \centering
@@ -319,7 +319,7 @@ Table~\ref{tab:main_results} reports F1 across all source--target permutations. 
 \textbf{Source} & \textbf{Target} & Few-shot & CTTA & Few-shot & CTTA & Few-shot & CTTA \\
 \midrule
 \multirow{2}{*}{ToN-IoT}
-    & UNSW    & 0.06 $\rightarrow$ 0.09 & 0.92 $\rightarrow$ 0.94 & 0.07 $\rightarrow$ 0.07 & 0.80 $\rightarrow$ 0.82 & 0.20 $\rightarrow$ 0.24 & 0.72 $\rightarrow$ 0.80 \\
+    & UNSW    & 0.06 $\rightarrow$ 0.09 & 0.92 $\rightarrow$ 0.94 & 0.07 $\rightarrow$ 0.07 & 0.79 $\rightarrow$ 0.82 & 0.20 $\rightarrow$ 0.24 & 0.72 $\rightarrow$ 0.80 \\
     & CICIDS  & 0.18 $\rightarrow$ 0.44 & 0.86 $\rightarrow$ 0.84 & 0.46 $\rightarrow$ 0.47 & 0.75 $\rightarrow$ 0.76 & 0.28 $\rightarrow$ 0.12 & 0.66 $\rightarrow$ 0.77 \\
 \midrule
 \multirow{2}{*}{UNSW}
@@ -386,7 +386,7 @@ Table~\ref{tab:main_results} reports F1 across all source--target permutations. 
 
 That TTA outperforms few-shot-only training in every configuration confirms that source pre-training does carry transferable information --- it is not merely an initialization that the small target pool could replace --- and that the bulk of the lift comes from combining source pre-training with stream adaptation. The KAN advantage is consistent with the spline-locality view in Section~\ref{sec:kan}: the same number of adapted parameters produces more functional change in a learnable-activation network than in a fixed-activation network.
 
-Figure~\ref{fig:trajectory} shows the adaptation trajectory under spline-only updates on the two ToN-IoT-sourced targets. UNSW (smaller domain gap) starts at higher F1 and converges within $\sim$80 batches; CICIDS (larger domain gap) starts much lower but reaches comparable plateau F1 by $\sim$160 batches. Both curves are monotone in F1, with no oscillation, indicating that spline-only updates do not destabilize the model under continued entropy minimization after the anchor is dropped.
+Figure~\ref{fig:trajectory} shows the adaptation trajectory under spline-only updates on the two CICIDS2018-sourced targets. ToN-IoT (smaller domain gap, higher zero-shot F1) starts higher but converges gradually over $\sim$2000 batches; UNSW-NB15 (larger domain gap, near-zero zero-shot F1) starts much lower but reaches near-perfect F1 within the first $\sim$50 batches and plateaus immediately. Both curves are monotone in F1, with no oscillation, indicating that spline-only updates do not destabilize the model under continued entropy minimization after the anchor is dropped.
 
 \begin{figure}[h]
   \centering
@@ -404,7 +404,7 @@ Figure~\ref{fig:trajectory} shows the adaptation trajectory under spline-only up
   \label{fig:trajectory}
 \end{figure}
 
-Figure~\ref{fig:logit_sep} visualizes the mechanism behind the F1 gain through logit-margin distributions: the score $\mathrm{logit}(\text{attack}) - \mathrm{logit}(\text{benign})$, partitioned by ground-truth label, before and after TTA. On UNSW (top), the pre-TTA distributions of attacks and benigns overlap throughout the margin axis; benigns sit at low magnitudes near zero and attacks have significant mass on the wrong side of the decision boundary. Post-TTA the two classes separate to opposite tails ($\pm 15$ to $\pm 20$) with negligible overlap. The pattern is even sharper on CICIDS (bottom): pre-TTA most attack flows have margin $-6$ (assigned benign with high confidence --- the worst-case failure for a security detector), while post-TTA attack flows sit at $+11$ and benigns at $-15$, both with high confidence and correct sign. In both targets, spline-only TTA does not merely flip labels; it restores high-confidence decisions in the correct direction.
+Figure~\ref{fig:logit_sep} visualizes the mechanism behind the F1 gain through logit-margin distributions: the score $\mathrm{logit}(\text{attack}) - \mathrm{logit}(\text{benign})$, partitioned by ground-truth label, before and after TTA, on the CICIDS2018 $\to$ UNSW-NB15 pair. Pre-TTA, the two class distributions collapse into the same narrow band with near-total overlap; most attack flows sit on the wrong side of the decision boundary, assigned benign with high confidence --- the worst-case failure for a security detector. Post-TTA the two classes separate to opposite tails ($\approx \pm 25$) with negligible overlap, both with high confidence and correct sign. Spline-only TTA does not merely flip labels; it restores high-confidence decisions in the correct direction, lifting F1 from $0.013$ to $0.956$ on this pair.
 
 \begin{figure}[h]
   \centering
@@ -416,7 +416,7 @@ Figure~\ref{fig:logit_sep} visualizes the mechanism behind the F1 gain through l
     narrow $[-10,{+}2]$ band with near-total overlap.
     After spline-only CTTA the benign mass moves to ${\approx}{-25}$
     and the attack mass to ${\approx}{+25}$, with zero overlap,
-    corresponding to an F1 jump from $0.007$ to $0.976$.}
+    corresponding to an F1 jump from $0.013$ to $0.956$.}
   \label{fig:logit_sep}
 \end{figure}
 
@@ -424,7 +424,7 @@ Figure~\ref{fig:logit_sep} visualizes the mechanism behind the F1 gain through l
 \subsection{Efficiency: Ablating What to Update}
 \label{sec:ablate}
 
-We examine whether spline-only is the right minimal-parameter choice. Table~\ref{tab:ablate_layers} compares spline-only against four alternatives on the KAN model (ToN-IoT $\to$ UNSW): the splines plus norm layers, splines plus classifier, the entire last KAN layer including its non-spline base path, and the full layer-selective set (norm + classifier + last layer) common in prior TTA work.
+We examine whether spline-only is the right minimal-parameter choice. Table~\ref{tab:ablate_layers} compares spline-only against five alternatives on the KAN model (ToN-IoT $\to$ UNSW): the splines plus norm layers, splines plus classifier, splines plus both norm layers and classifier jointly, the entire last KAN layer including its non-spline base path, and the full layer-selective set (norm + classifier + last layer) common in prior TTA work.
 
 \begin{table}[h]
 \centering
@@ -472,7 +472,7 @@ ent only (TENT-like)     & 0.0006 \\
 \subsection{Interpretability: What Did Adaptation Actually Change?}
 \label{sec:rq4}
 
-Because the updated parameters are exactly the spline coefficients of one layer, the adapted model is directly inspectable. We present two complementary views, both on the post-TTA KAN model (source = ToN-IoT, target = UNSW-NB15).
+Because the updated parameters are exactly the spline coefficients of one layer, the adapted model is directly inspectable. We present two complementary views of post-TTA KAN models; each figure states its source--target pair in its caption.
 
 \paragraph{Per-dimension importance shift (Fig.~\ref{fig:importance}).}
 The last encoder layer maps a 64-dimensional hidden representation $\mathbf{h}$ to a 32-dimensional latent $\mathbf{z}$. For each hidden dimension $i$ we compute the combined spline-and-base weight magnitude of the edges originating from $i$, $\sum_{j,k} |w_{ij}^{(k)}| + |w^{\text{base}}_{ij}|$, which captures how much that dimension contributes to the latent representation. Figure~\ref{fig:importance} ranks the top-15 dimensions by their pre-TTA importance and shows post-TTA values alongside. The redistribution is visible at a glance: dimensions that were already prominent (\textit{e.g.}, \texttt{h35}, \texttt{h23}) gain further weight, but several previously lower-ranked dimensions --- \texttt{h28}, \texttt{h38}, \texttt{h2}, \texttt{h9} --- rise sharply, more than doubling their importance. The overall distribution flattens, indicating the adapted model draws on a broader subset of the hidden representation than the source model did. This is a parameter-level description of the encoder's reallocation, which would not be obtainable from a post-hoc attribution method.
@@ -485,16 +485,18 @@ The last encoder layer maps a 64-dimensional hidden representation $\mathbf{h}$ 
     (KAN, source: ToN-IoT $\to$ target: UNSW-NB15).
     Blue bars show weight magnitudes before CTTA; red bars show the
     same dimensions after spline-only adaptation.
-    Dimensions such as Latent~50, 24, and~3 grow by an order of
-    magnitude, while the relative ordering changes substantially,
-    indicating that the spline coefficients selectively amplify
-    target-discriminative latent directions without touching the
-    base linear weights.}
+    Already-prominent dimensions such as \texttt{h35} and \texttt{h23}
+    gain further weight, while previously lower-ranked dimensions
+    \texttt{h28}, \texttt{h38}, \texttt{h2}, and \texttt{h9} more than
+    double in importance and the relative ordering changes
+    substantially, indicating that the spline coefficients selectively
+    amplify target-discriminative latent directions without touching
+    the base linear weights.}
 \label{fig:importance}
 \end{figure}
 
 \paragraph{Spline activation shapes (Fig.~\ref{fig:splines}).}
-Figure~\ref{fig:splines} shows the learned $\phi_{ij}(x)$ curves in the first (frozen) and last (adapted) encoder layers, before and after TTA. The first-layer panels (rows 1, 3) are identical pre-/post-adaptation, confirming the freeze: the same four high-importance input features (\texttt{TCP\_WIN\_MAX\_IN}, \texttt{TCP\_FLAGS}, \texttt{SERVER\_TCP\_FLAGS}, \texttt{L7\_PROTO}) produce the same curves before and after. The last-layer panels (rows 2, 4) tell the adaptation story: not only do the dominant latent indices change (Latent 35 / 38 / 28 / 2 pre-TTA vs.\ Latent 2 / 35 / 28 / 38 post-TTA, in importance order), the curves themselves are reshaped substantially. Several edges flip from monotone-increasing to non-monotone, others change inflection points, and the relative magnitudes of the three highlighted destination hidden units per panel are rebalanced. The visible structural difference between rows 2 and 4 is the entirety of the TTA update --- one can point at the curve change and say what the model learned.
+Figure~\ref{fig:splines} shows the learned $\phi_{ij}(x)$ curves in the first (frozen) and last (adapted) encoder layers, before and after TTA, for the UNSW-NB15 $\to$ CICIDS2018 pair. The first-layer panels (rows 1, 3) are identical pre-/post-adaptation, confirming the freeze: the same high-importance input features (\texttt{MAX\_TTL}, \texttt{MIN\_TTL}, \texttt{DNS\_QUERY\_ID}) produce the same curves before and after. The last-layer panels (rows 2, 4) tell the adaptation story: not only do the dominant latent indices change, the curves themselves are reshaped substantially. Several edges flip from monotone-increasing to non-monotone, others change inflection points, and the relative magnitudes of the three highlighted destination hidden units per panel are rebalanced. The visible structural difference between rows 2 and 4 is the entirety of the TTA update --- one can point at the curve change and say what the model learned.
 
 \begin{figure*}[t]
  \centering
@@ -552,39 +554,5 @@ We presented a test-time adaptation framework for cross-network intrusion detect
 % ============================================================================
 \bibliographystyle{IEEEtran}
 \bibliography{references}
-\begin{table*}[ht]
-\centering
-\caption{Table 3 — Trainable subset ablation (Type B), macro-F1}
-\label{tab:ablation-trainable-b}
-\begin{tabular}{lcccccc}
-\toprule
-\textbf{Trainable Subset} & \textbf{ToN$\to$UNSW} & \textbf{ToN$\to$CICIDS} & \textbf{UNSW$\to$CICIDS} & \textbf{UNSW$\to$ToN} & \textbf{CICIDS$\to$ToN} & \textbf{CICIDS$\to$UNSW} \\
-\midrule
-Spline-only                       & 0.9844 & 0.9310 & 0.9075 & 0.7968 & 0.8562 & 0.9877 \\
-Splines + norm                    & 0.9832 & 0.9241 & 0.9092 & 0.8014 & 0.8570 & 0.9873 \\
-Splines + classifier              & 0.9850 & 0.9314 & 0.9057 & 0.8003 & 0.8578 & 0.9886 \\
-Splines + norm + classifier       & 0.9849 & 0.9264 & 0.9135 & 0.8027 & 0.8577 & 0.9868 \\
-Last KAN layer (incl.\ base)      & 0.9871 & 0.9343 & 0.9223 & 0.7953 & 0.8576 & 0.9906 \\
-Norm + classifier + last layer    & 0.9845 & 0.9360 & 0.9223 & 0.8019 & 0.8597 & 0.9906 \\
-\bottomrule
-\end{tabular}
-\end{table*}
-
-\begin{table*}[ht]
-\centering
-\caption{Table 4 — Loss-term ablation with spline-only trainable parameters (Type B), macro-F1}
-\label{tab:ablation-loss-b}
-\begin{tabular}{lcccccc}
-\toprule
-\textbf{Loss Terms} & \textbf{ToN$\to$UNSW} & \textbf{ToN$\to$CICIDS} & \textbf{UNSW$\to$CICIDS} & \textbf{UNSW$\to$ToN} & \textbf{CICIDS$\to$ToN} & \textbf{CICIDS$\to$UNSW} \\
-\midrule
-CE + ent + recon       & 0.9833 & 0.9303 & 0.9101 & 0.7977 & 0.8558 & 0.9879 \\
-CE + ent               & 0.9842 & 0.9312 & 0.9109 & 0.7991 & 0.8591 & 0.9867 \\
-CE only                & 0.9823 & 0.9390 & 0.9012 & 0.7951 & 0.8571 & 0.9869 \\
-ent only (TENT-like)   & 0.0000 & 0.0006 & 0.2686 & 0.7798 & 0.0007 & 0.0000 \\
-\bottomrule
-\end{tabular}
-\end{table*}
-
 
 \end{document}
