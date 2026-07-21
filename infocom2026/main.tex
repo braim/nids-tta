@@ -1,0 +1,888 @@
+\documentclass[10pt, conference, letterpaper]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{url}
+\usepackage{textcomp}
+\usepackage{xcolor}
+
+\newcommand{\obs}[1]{\vspace{2pt}\noindent\textbf{Observation~#1.}}
+
+\begin{document}
+
+\title{One Model, Many Networks: \\Self-Routing Consolidation of KANs for
+Cross-Network Intrusion Detection}
+
+% INFOCOM submissions are double-blind: keep the block below anonymized for
+% submission and restore author names for the camera-ready version.
+\author{\IEEEauthorblockN{Anonymous Author(s)}
+\IEEEauthorblockA{Submission to IEEE INFOCOM 2026}}
+
+\maketitle
+
+\begin{abstract}
+Flow-based network intrusion detection systems are usually trained on
+one network and deployed on another. We show that this transfer fails
+even when the feature schema is identical. Across every ordered pair of
+three NetFlow benchmarks that share the same 49 features, zero-shot F1
+averages $0.23$, although in-domain F1 exceeds $0.92$. This paper
+presents a few-shot test-time adaptation framework that restores
+accuracy under realistic operating constraints. An analyst labels 100
+flows, about $10^{-4}$ of the target traffic; the rest arrives as an
+unlabelled stream, and every batch is scored before it is used for
+adaptation. A class-weighted supervised loss on the labelled pool
+anchors the adaptation and prevents the failure mode of purely
+unsupervised methods, which on imbalanced traffic converge to
+predicting the benign class everywhere (F1 as low as $0.001$). The
+central mechanism, activation-gated spline adaptation (AGSA), builds on
+the locality of Kolmogorov--Arnold network (KAN) spline bases. It
+tracks which basis regions the target traffic activates and freezes the
+rest, so updates are confined to regions for which the new network
+supplies evidence. Over 18 source$\to$target runs the framework
+restores mean F1 to $0.82$ with the KAN, which attains both the
+highest mean and the highest worst-case recovery of the three
+architectures evaluated. The activation statistics that AGSA maintains also support
+fleet consolidation: spline-support routing (SSR) combines the adapted
+models of several sites, each a spline overlay of about 74\,KB, into
+one model that identifies which network it is observing within a few
+dozen flows. The consolidated model reaches an all-domain mean F1 of
+$0.82$ to $0.90$ while storing no traffic, requiring no further
+training, and remaining bit-identical to the source model on source
+traffic. Because each learned function is a univariate curve attached
+to a named flow feature, plots of the curves before and after
+adaptation show what changed and explain why one benchmark transfers
+poorly, so the adaptation itself can be audited.
+\end{abstract}
+
+\begin{IEEEkeywords}
+network intrusion detection, test-time adaptation, continual learning,
+domain shift, Kolmogorov--Arnold networks, NetFlow
+\end{IEEEkeywords}
+
+\section{Introduction}\label{sec:intro}
+Machine-learning network intrusion detection systems (NIDS) routinely
+report F1 scores above $0.95$ on the network they were trained on. In practice, a detector is trained where
+labels exist, such as a lab testbed, a vendor's corpus, or a previously
+instrumented site, and runs where they do not: a different enterprise
+segment, an IoT deployment, a newly onboarded customer network.
+Cross-dataset evaluations
+\cite{apruzzese2022cross,layeghy2023generalisability} have established
+that the resulting gap is large. What prior work does not provide is
+the recovery mechanism a network operator needs. Given a trained model,
+an analyst willing to label about a hundred flows, and an unlimited
+unlabelled traffic stream, the task is to restore detection quality
+online, without full retraining, without a labelled target corpus, and
+without destroying the model's value on the network it came from or on
+the other networks its operator serves.
+
+This paper builds and evaluates that mechanism. The framework adapts a
+pre-trained detector to a new network from a 100-flow labelled pool,
+about $10^{-4}$ of the target data, together with the live unlabelled
+stream. Every stream batch is predicted \emph{before} it is used for
+adaptation \cite{wang2021tent}, so reported performance is what a
+deployed system would have delivered. The framework rests on three
+design decisions, each forced by the security setting rather than
+inherited from test-time adaptation (TTA) as practiced in computer
+vision. First, adaptation is anchored: a class-weighted supervised
+loss on the small pool, together with a prior-matching guard, prevents
+the majority-class collapse that entropy-only adaptation
+\cite{wang2021tent} suffers on traffic that is between 5\% and 39\%
+attacks. Second, adaptation is selective: only the last encoder layer
+and head train, which recovers $91\%$ of the gain of full fine-tuning
+at a fifth of the parameters while preserving the frozen structure that
+retention, consolidation, and auditability build on; the
+norm-parameter recipe imported from vision TTA is, by contrast, the
+weakest choice we tested. Third, adaptation is confined:
+activation-gated spline adaptation (AGSA) uses the locality of
+Kolmogorov--Arnold networks (KANs) \cite{liu2024kan}, whose learned
+functions are local B-spline expansions. AGSA tracks which spline
+basis regions the target traffic activates and masks gradients to the
+rest, freezing source knowledge wherever the target provides no
+evidence. This form of retention is not expressible in an architecture
+whose every weight affects every input.
+
+We evaluate on every ordered pair of three NetFlow benchmarks that share
+an identical 49-feature schema \cite{sarhan2022netflow}, across three
+architectures (KAN, 1-D CNN, TabTransformer
+\cite{huang2020tabtransformer}), in the standard episodic setting and
+in a fleet setting in which independently adapted models must be
+consolidated. This paper makes the following contributions.
+
+\begin{itemize}
+  \item \textbf{A few-shot test-time adaptation framework for
+  cross-network NIDS}, to our knowledge the first, combining a weighted
+  supervised anchor, an anti-collapse prior, confidence-filtered
+  entropy, stream reconstruction, and selective updates, under a
+  predict-then-adapt protocol (Section~\ref{sec:approach}).
+  \item \textbf{AGSA}, a retention mechanism intrinsic to KANs that
+  confines spline updates to target-activated basis regions
+  (Section~\ref{sec:method-agsa}), costs no target accuracy where it
+  gates, and produces activation statistics that serve as domain
+  fingerprints; and \textbf{SSR}, which turns those fingerprints into a
+  router that consolidates per-site spline overlays into one fleet
+  model with no training and no stored traffic (Section~\ref{sec:ssr}),
+  to our knowledge the first consolidation-by-routing result for NIDS.
+  \item \textbf{A systematic cross-network study} of 18
+  source$\to$target runs, trainable-subset, loss-term, and label-budget
+  ablations, and a weight-space consolidation study, summarized in
+  eight observations an operator can act on. Zero-shot transfer
+  collapses to mean F1 $0.23$, in one case with an inverted decision
+  boundary; the framework restores mean F1 to $0.82$ with the KAN, the
+  best mean and the best worst case of the three architectures; and
+  the consolidated fleet model reaches an all-domain
+  mean of $0.82$ to $0.90$, exceeding a 300-label joint model in two of
+  three configurations while using no labels at consolidation time.
+  \item \textbf{Auditable adaptation.} KAN spline curves before and
+  after adaptation show what changed, and identify from the source
+  model alone why one benchmark transfers worst
+  (Section~\ref{sec:splines}).
+\end{itemize}
+
+\section{Related Work}\label{sec:related}
+\textbf{Test-time adaptation.} TENT \cite{wang2021tent} adapts
+normalization parameters by entropy minimization;
+Schneider et al.~\cite{schneider2020bn} adapt batch-norm statistics; TTT
+\cite{sun2020ttt} attaches a self-supervised head whose loss can be
+optimized on unlabelled test data. Continual TTA methods add drift
+control: CoTTA \cite{wang2022cotta} uses stochastic restore toward
+source weights, EATA \cite{niu2022eata} filters unreliable samples and
+adds an anti-forgetting regularizer, and SAR \cite{niu2023sar}
+stabilizes adaptation in wild, temporally correlated streams. All of
+these were designed for, and evaluated on, vision corruptions with
+balanced classes. We show that the imbalanced security setting changes
+the conclusions qualitatively: entropy-only adaptation is unsafe, and
+norm-parameter updates are the wrong subset. We therefore build the
+framework around a supervised few-shot anchor and reuse the filtering
+and restore ideas as components.
+
+\textbf{Cross-network NIDS evaluation and drift.} Apruzzese et
+al.~\cite{apruzzese2022cross} and Layeghy and
+Portmann~\cite{layeghy2023generalisability} document severe
+cross-dataset degradation of ML-NIDS. The standardized NetFlow feature
+sets of Sarhan et al.~\cite{sarhan2022netflow} were created to enable
+such studies by removing schema mismatch as a confound, and we build
+directly on their v3 conversions. INSOMNIA
+\cite{andresini2021insomnia} addresses temporal drift \emph{within} one
+network through incremental active learning. Our work addresses the
+complementary problem of recovery \emph{across} networks, including
+consolidating a multi-network fleet, which to our knowledge has not
+previously been studied for NIDS.
+
+\textbf{Continual learning.} Catastrophic forgetting
+\cite{mccloskey1989catastrophic} is classically mitigated by
+weight-space penalties (EWC \cite{kirkpatrick2017ewc}) or experience
+replay \cite{rolnick2019replay}. AGSA takes a third, structural route:
+it partitions the spline support instead of penalizing weight motion or
+storing data. Weight-space model merging, in the form of soups
+\cite{wortsman2022soups} and task arithmetic \cite{ilharco2023task},
+promises to consolidate separately adapted models without data. We show
+that static fusion fails on adapted NIDS for a measurable reason and
+that routing on the KAN's own grid fingerprints succeeds
+(Section~\ref{sec:merge}).
+
+\textbf{Kolmogorov--Arnold networks.} KANs \cite{liu2024kan} replace
+fixed node nonlinearities with learnable edge functions parameterized as
+B-spline expansions. Early work emphasizes accuracy and symbolic
+interpretability on scientific tasks. We are, to our knowledge, the
+first to exploit the \emph{locality} of the spline parameterization for
+test-time adaptation and continual retention, and the first systematic
+evaluation of KANs under distribution shift in a security setting.
+
+\section{Background: Kolmogorov--Arnold Networks}
+\label{sec:kan}
+A KAN layer with $n_{\text{in}}$ inputs and $n_{\text{out}}$ outputs
+computes
+\begin{equation}
+y_j=\sum_{i=1}^{n_{\text{in}}}\phi_{ji}(x_i),\qquad
+\phi_{ji}(x)=w^{b}_{ji}\,\sigma(x)+\sum_{k=1}^{G}c_{jik}\,B_k(x),
+\label{eq:kan}
+\end{equation}
+where every edge carries its own learnable univariate function: a
+global residual path $w^{b}_{ji}\sigma(\cdot)$ plus a spline expansion
+in $G$ B-spline basis functions $B_k$ on a fixed grid over $[-1,1]$.
+The property our framework relies on is that each coefficient
+$c_{jik}$ is local. Because $B_k$ has compact support, $c_{jik}$
+influences the function only for inputs $x_i$ that fall in one
+sub-interval of that feature's range.
+
+For an intrusion detector that moves between networks, this locality
+has three uses, and the framework draws on all of them.
+(a)~\emph{Confinable adaptation.} A network exercises each feature
+over its own characteristic region, determined by its port mix, its
+RTT regime, and its window-size population. Gradients for coefficients
+outside that region carry no signal, only noise, which Adam's
+per-coordinate normalization \cite{kingma2015adam} amplifies into
+full-sized updates that corrupt the learned function exactly where the
+new network provides no evidence. AGSA masks those updates. An
+architecture with global weights cannot support this: in an MLP, CNN,
+or attention block, every weight touches every input.
+(b)~\emph{Readable adaptation.} Because each $\phi_{ji}$ is a
+univariate curve attached to a named flow feature, the question of
+what adaptation changed has a direct visual answer
+(Fig.~\ref{fig:splinesunsw}), and the per-feature importance
+$\sum_k|c_{jik}|$ gives an audit trail a security-operations analyst
+can act on.
+(c)~\emph{Drift telemetry at no cost.} The per-basis activation mass
+that AGSA tracks is a running estimate of where traffic lives in
+feature space, and its change between deployments is itself a
+domain-shift signal, obtained without an auxiliary detector.
+
+\section{Proposed Approach}
+\label{sec:approach}
+
+\subsection{Setting and Notation}\label{sec:setting}
+We call the procedure few-shot continual test-time adaptation (CTTA).
+A detector $f_\theta$ is pre-trained on a labelled \emph{source}
+network and must operate on a \emph{target} network with a different
+traffic distribution. At the target, two resources exist. The first is
+a labelled \emph{pool} $\mathcal{P}=\{(x_i,y_i)\}_{i=1}^{100}$ of 100
+stratified flows, about $10^{-4}$ of the target data and the realistic
+product of a brief analyst triage session. The second is the
+unlabelled live \emph{stream}, processed once as a sequence of batches
+$B_1,\dots,B_T$ with $|B_t|=512$. The protocol is online: batch $B_t$
+is first scored with the current parameters,
+$\hat{y}_t=f_{\theta_{t-1}}(B_t)$, and only then used to compute
+$\theta_t$ (predict-then-adapt \cite{wang2021tent}), so no reported
+number benefits from a transductive peek. In the fleet setting, copies
+of the same source model adapt at multiple sites in parallel and are
+afterwards consolidated into one deployable model
+(Section~\ref{sec:ssr}), which is the regime an NIDS fleet operates
+in.
+
+\subsection{Adaptation Objective}\label{sec:objective}
+Each adaptation step minimizes
+\begin{equation}
+\mathcal{L} = \underbrace{\mathrm{CE}_w(\mathcal{P})}_{\text{anchor}}
+ + \underbrace{\lambda_e\, \mathcal{H}_{\text{filt}}(B_t)
+ + \lambda_m\, \mathrm{KL}(\bar{p}\,\|\,\pi)}_{\text{unsupervised}}
+ + \lambda_r\, \mathcal{R}(B_t),
+\label{eq:loss}
+\end{equation}
+with $\lambda_e{=}\lambda_m{=}1$, $\lambda_r{=}0.5$, where
+$\mathcal{R}(B_t)=|B_t|^{-1}\sum_{x\in B_t}\|\hat{x}-x\|^2$ is the
+mean stream reconstruction error. Each term addresses a specific
+property of security traffic.
+
+\emph{Anchor.} $\mathrm{CE}_w$ is class-weighted cross-entropy on a
+pool batch,
+\begin{equation}
+\mathrm{CE}_w(\mathcal{P}) = -\frac{1}{|B_{\mathcal{P}}|}
+\sum_{(x,y)\in B_{\mathcal{P}}} w_y \log p_\theta(y \mid x),
+\label{eq:ce}
+\end{equation}
+with inverse-frequency weights
+$w_c = \min\{1/(2\hat{\rho}_c),\, 20\}$, where $\hat{\rho}_c$ is the
+frequency of class $c$ in the pool. The cap keeps a pool with a
+handful of attacks from destabilizing the high adaptation learning
+rate \cite{lin2017focal}. This term carries the
+recovery: the loss ablation (Table~\ref{tab:loss}) shows that removing
+it is catastrophic, while removing everything else costs a few points.
+
+\emph{Anti-collapse guard.} With
+$\bar{p}=|B_t|^{-1}\sum_{x\in B_t} p_\theta(\cdot \mid x)$ the
+batch-marginal prediction and $\pi$ the pool's class prior, the term
+$\mathrm{KL}(\bar{p}\,\|\,\pi)$ pins the predicted attack rate to the
+prior. On traffic that is between 5\% and 39\% attacks, unsupervised
+objectives otherwise drift toward predicting the majority class
+everywhere; entropy-only adaptation reaches F1 as low as $0.001$
+(Section~\ref{sec:ablate}), confidently benign on everything, which is
+the one failure a security system cannot tolerate.
+
+\emph{Filtered entropy.} Let
+$H(x)=-\sum_y p_\theta(y \mid x)\log p_\theta(y \mid x)$ and
+$E_0 = 0.4\ln 2$. Following EATA \cite{niu2022eata}, only reliable
+stream samples $S_t=\{x \in B_t : H(x)<E_0\}$ contribute, weighted by
+their confidence:
+\begin{equation}
+\mathcal{H}_{\text{filt}}(B_t) = \frac{1}{|S_t|} \sum_{x \in S_t}
+e^{\,E_0 - H(x)}\, H(x).
+\label{eq:ent}
+\end{equation}
+This extracts signal from the unlabelled stream without letting
+unreliable samples near the decision boundary steer the update.
+
+\emph{Stream reconstruction.} All models carry a decoder head trained
+with a reconstruction loss at the source; at the target the same loss
+on stream batches provides self-supervision in the style of TTT
+\cite{sun2020ttt} exactly where the shift lives.
+
+Optimization uses Adam with learning rate $10^{-2}$ and stochastic
+restore in the style of CoTTA \cite{wang2022cotta}. After each step,
+\begin{equation}
+\theta \leftarrow m \odot \theta_{\text{src}} + (1-m)\odot\theta,
+\qquad m \sim \mathrm{Bernoulli}(0.01),
+\label{eq:restore}
+\end{equation}
+applied coordinate-wise over the trainable subset, which bounds
+cumulative drift over the million-flow stream.
+
+\subsection{Selective Spline Adaptation}\label{sec:selective}
+Only a small subset of parameters trains: the norm layers, classifier
+head, and last encoder layer, between $12\%$ and $21\%$ of the
+parameters, or, in the most restricted variant, the last KAN layer's
+spline coefficients alone. Selectivity is not only an efficiency
+choice. The first encoder layer's splines are the model's learned
+per-feature transforms, the transferable knowledge the source
+contributes, and freezing them both preserves that knowledge and keeps
+the adaptation readable (Section~\ref{sec:splines}). The subset ablation (Section~\ref{sec:ablate}) confirms the design:
+restricting updates to the last KAN layer costs almost nothing, while norm parameters, the canonical choice in vision TTA, are the weakest addition, because tabular flow features do not shift primarily in their first two moments.
+
+\subsection{AGSA: Activation-Gated Spline Adaptation}
+\label{sec:method-agsa}
+AGSA is the mechanism that locality makes possible. For every spline
+coefficient $c_{jik}$ of each trainable KAN layer, AGSA maintains an
+exponential moving average of the activation mass observed on target
+batches,
+\begin{equation}
+A_{ik} \leftarrow \gamma\, A_{ik} + (1-\gamma)\,
+\frac{1}{|B_t|}\sum_{x \in B_t} \big|B_k(x_i)\big|,
+\qquad \gamma = 0.99,
+\label{eq:ema}
+\end{equation}
+and masks the gradient of every coefficient whose mass is below $5\%$
+of the maximum on its input dimension:
+\begin{equation}
+\tilde{\nabla} c_{jik} = \nabla c_{jik}\cdot
+\mathbf{1}\!\left[\,A_{ik} \geq 0.05\,
+\max_{k'} A_{ik'}\right].
+\label{eq:agsa}
+\end{equation}
+Adaptation is thereby confined to spline regions the target
+exercises, which in our runs cover $36\%$ to $47\%$ of coefficients,
+while the source function elsewhere is structurally frozen: no penalty
+term, no extra loss, and no effect on visited-region fitting. The same
+averages $A_{ik}$, normalized per input dimension, are a compact
+record of where the site's traffic lives on the grid, the statistic
+Section~\ref{sec:ssr} turns into a router.
+
+\subsection{Fleet Consolidation: Spline-Support Routing (SSR)}
+\label{sec:ssr}
+An NIDS fleet adapts in parallel. Each site $D$ produces an
+\emph{overlay}, the last layer's adapted spline tensors ($18{,}432$
+parameters, ${\sim}74$\,KB), and, as a by-product of AGSA, an
+activation-mass \emph{fingerprint} of its traffic. The overlay
+suffices: under the full framework these tensors alone land within
+$1.4$ points of the full selective subset (Table~\ref{tab:subset})
+while retaining more of the source function (mean post-adaptation
+source F1 $0.46$ vs.\ $0.35$), so the $74$\,KB overlay carries
+essentially the entire adaptation. Normalizing the activation mass per
+input dimension gives a distribution over basis bins,
+\begin{equation}
+p_D[i,k] = \frac{A^{D}_{ik}}{\sum_{k'} A^{D}_{ik'}},
+\label{eq:fp}
+\end{equation}
+a compact, data-free signature of where site $D$'s traffic lives on
+the grid. We record it on the frozen first layer, so fingerprints are
+directly comparable across sites, and on the adapted layer. SSR
+consolidates the fleet into a single model: the shared backbone, one
+overlay per site (the source keeps its own), and a router that scores
+a window of $W$ flows by fingerprint log-likelihood,
+\begin{equation}
+\mathrm{route}(x_{1:W})=\arg\max_{D}\;\sum_{w=1}^{W}\sum_{i,k}
+\tilde{B}_{ik}(x_w)\,\log p_D[i,k],
+\label{eq:ssr}
+\end{equation}
+where $\tilde{B}(x_w)$ are the normalized B-spline basis activations
+that the forward pass computes in any case, so the router costs no
+parameters, no training, and no stored flows. (Other architectures can
+route too, given added machinery; Section~\ref{sec:discussion}
+outlines this extension. The KAN's distinction is that the density model
+comes pre-installed: the binning is the model's own grid, the basis
+activations are computed by every forward pass, and AGSA already
+accumulates the statistics.) One decision is taken per window, not per
+flow. A deployed sensor observes a stream from one network segment, so
+windows are domain-pure by construction, and aggregation turns a weak
+per-flow signal into a near-certain decision. Because the source
+retains its own overlay, the consolidated model is bit-identical to
+the source model on source traffic.
+
+\subsection{Per-Batch Procedure}
+For each stream batch $B_t$: (1)~predict
+$\hat{y}_t = f_{\theta_{t-1}}(B_t)$, which is what is scored;
+(2)~update the activation averages of Eq.~\eqref{eq:ema} from the same
+forward pass and refresh the masks; (3)~draw a pool batch, compute
+Eq.~\eqref{eq:loss}, and backpropagate through the trainable subset
+with the gated gradients of Eq.~\eqref{eq:agsa}; (4)~apply the Adam
+step and the stochastic restore of Eq.~\eqref{eq:restore}. One
+optimizer step per stream batch; nothing is revisited.
+
+\section{Experimental Setup}\label{sec:setup}
+
+\subsection{Datasets and Preprocessing}
+We use the v3 NetFlow conversions \cite{sarhan2022netflow} of three
+standard benchmarks (Table~\ref{tab:data}): NF-CICIDS2018-v3
+\cite{sharafaldin2018cicids} (enterprise traffic), NF-ToN-IoT-v3
+\cite{moustafa2021toniot} (IoT/IIoT telemetry-heavy traffic), and
+NF-UNSW-NB15-v3 \cite{moustafa2015unsw} (synthetic mixed traffic). All
+three expose the \emph{same} 49 usable flow features after dropping
+identifiers (addresses, ports, timestamps), which isolates distribution
+shift from schema mismatch. From each dataset we draw a stratified
+sample of $10^6$ flows; detection is binary and F1 is always computed on
+the attack class. Duration and bytes-per-packet are derived features,
+clipped at zero before log transforms; heavy-tailed volume and
+inter-arrival features are $\log(1+x)$ transformed; all features are
+mapped to $[-1,1]$ by a rank-based quantile transform fit on the
+source only and reused unchanged on the target. Rank scaling is a
+deployment choice. Out-of-range target values saturate at the grid
+boundary, and the $[-1,1]$ range matches the KAN spline support, so the
+position of a flow on the spline grid coincides with its position in
+the data distribution.
+
+\begin{table}[t]
+\caption{Datasets (v3 NetFlow conversions, $10^6$-flow stratified samples)
+and in-domain test F1 after source pre-training.}
+\label{tab:data}
+\centering
+\begin{tabular}{lccccc}
+\toprule
+ & & Attack & \multicolumn{3}{c}{In-domain F1} \\
+\cmidrule(lr){4-6}
+Dataset & Traffic & rate & KAN & CNN & TabTr. \\
+\midrule
+NF-CICIDS2018-v3 & enterprise & 12.98\% & .968 & .966 & .968 \\
+NF-ToN-IoT-v3 & IoT/IIoT & 38.97\% & .929 & .924 & .927 \\
+NF-UNSW-NB15-v3 & synthetic mix & 5.44\% & .999 & .998 & .998 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Architectures and Training}
+All models share an encoder--classifier--decoder layout returning
+(logits, reconstruction, latent). The \textbf{KAN}
+\cite{liu2024kan,efficientkan} encoder is $49{\to}64{\to}32$ with grid
+range $[-1,1]$ and $G=8$ basis functions per edge (103{,}810
+parameters, 20{,}610 in the selective subset);
+the \textbf{CNN} is a compact 1-D convolutional encoder (10{,}963 /
+2{,}338); the \textbf{TabTransformer} \cite{huang2020tabtransformer}
+tokenizes each feature and applies 4-head self-attention (6{,}147 /
+738). The CNN and TabTransformer serve as controls with global weights:
+identical pipeline and objectives, no locality. Each model is
+pre-trained on its source for 20 epochs (Adam, learning rate $10^{-3}$,
+weighted CE plus $0.5\times$ reconstruction); in-domain test F1 ranges
+from $0.92$ to $0.999$ (Table~\ref{tab:data}), so nothing that follows
+is an artifact of a weak source model. At the target, the stream of
+999{,}900 flows yields 1{,}953 online steps.
+
+\subsection{Baselines and Controls}
+\emph{Zero-shot} applies the source model unchanged. \emph{Pool-only
+fine-tuning} (``few-shot'') trains the same selective subset on the
+pool alone with the same optimizer, that is, the framework minus the
+stream. Ablations vary the trainable subset and delete loss terms one
+at a time under identical budgets. Training \emph{all} parameters on
+the same protocol serves as an upper reference. It adds a few points
+of target F1 (KAN mean $0.872$ vs.\ $0.818$) but rewrites the frozen
+first-layer transforms that retention, fleet consolidation, and the
+audit trail of Section~\ref{sec:splines} are built on; the selective
+subset recovers $91\%$ of that gain with $20\%$ of the parameters, so
+we treat full tuning as a bound rather than a deployable
+configuration. All experiments
+use a single seed re-applied at the start of every configuration;
+paired comparisons, for example AGSA on versus off, share weights and
+RNG state so the mechanism under test is the only difference. A complete end-to-end
+re-execution of the KAN experiments reproduced every headline aggregate
+within $\pm 0.03$ F1 and every qualitative conclusion; the claims in
+this paper are those that held across both executions. Fisher-information (EWC
+\cite{kirkpatrick2017ewc}) retention was implemented but disabled after
+the measured penalty proved negligible ($\leq 8\times10^{-4}$;
+Section~\ref{sec:agsa}).
+
+\section{Cross-Network Results}\label{sec:results}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{fig_trajectory.png}
+\caption{Online (predict-then-adapt) F1 over the stream for the KAN
+pre-trained on CICIDS2018. Adaptation to ToN-IoT saturates within
+${\sim}150$ batches (${\sim}75$k flows); UNSW-NB15, whose zero-shot F1 is
+$0.012$, needs ${\sim}750$ batches (${\sim}380$k flows) to plateau.}
+\label{fig:traj}
+\end{figure}
+
+\input{tab_main}
+
+\obs{1} \emph{A shared feature schema does not transfer, and the
+failure can be inverted.} Despite identical features and near-ceiling
+source performance, zero-shot F1 averages $0.232$ over the 18 pairs
+(Table~\ref{tab:main}), with UNSW-NB15 as target the worst (F1 between
+$0.011$ and $0.088$ from the CICIDS2018 and ToN-IoT sources). The
+failure is not mere under-confidence. Fig.~\ref{fig:logits} (left)
+shows that the CICIDS2018 model assigns higher attack logits to benign
+UNSW flows than to actual attacks; the decision boundary is inverted
+in the shifted representation. The operational consequence is that a
+drift monitor relying on the source model's own confidence would not
+merely miss the degradation but would be systematically misled, and
+recalibrating the threshold cannot fix a boundary that points the
+wrong way.
+
+\obs{2} \emph{One hundred labelled flows plus the stream recover most
+of the loss, and the stream is what makes the recovery robust.} The
+framework lifts mean F1 from $0.232$ to $0.819$ (KAN), $0.774$ (CNN),
+and $0.760$ (TabTransformer), recovering, against the in-domain
+ceiling of $0.92$ to $1.0$, the bulk of what the network move
+destroyed, with per-pair gains of up to $+0.85$ (Table~\ref{tab:main},
+$\Delta$ column). Post-adaptation accuracy averages $0.93$ for the KAN
+against $0.91$ and $0.90$ for the controls. For the architectures with
+global weights the stream is necessary: it adds $+0.07$ (CNN) and
+$+0.25$ (TabTransformer) over pool-only fine-tuning, whose floor
+collapses to $0.50$ and $0.32$ on their worst pairs. The KAN is the
+exception, and the reason is locality. Each labelled flow adjusts only
+the spline regions it lands in, so a 100-flow stratified pool alone
+already reaches mean $0.823$, matching CTTA's mean within noise. Even
+there the stream matters on the quantities an operator provisions
+for: it raises the worst-case pair from $0.729$ to $0.771$,
+and Fig.~\ref{fig:traj} shows the inverted-boundary shift
+(CIC$\to$UNSW, zero-shot $0.012$) climbing for about $380$k flows, an
+improvement no offline pool fit can deliver. The label budget
+completes the argument (Table~\ref{tab:pool}). Halving the pool to
+$50$ flows costs pool-only fine-tuning roughly twice what it costs
+CTTA (KAN means $0.82\!\to\!0.75$ vs.\ $0.82\!\to\!0.78$) and reverses
+their order; with 50 labels the stream is worth $+2.7$ points of mean
+F1 and up to $+21$ on the severest shift (ToN$\to$UNSW: $0.98$ vs.\
+$0.77$), while the KAN's lead over the CNN and TabTransformer persists
+($0.78$/$0.74$/$0.66$). The scarcer the labels, the more the stream
+matters. At the 100-flow budget the KAN posts both the highest mean
+and the highest worst-case pair ($0.771$, vs.\ $0.697$ for the CNN and
+$0.591$ for the TabTransformer), and in security deployment the worst
+case is the operative number, because a detector is provisioned for
+its floor.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.82\textwidth]{fig_logits.png}
+\caption{Logit margin (attack $-$ benign) distributions on UNSW-NB15 for
+the KAN pre-trained on CICIDS2018, before (left) and after (right)
+adaptation. Before adaptation the classes are interleaved and partially
+inverted, in that attack flows receive lower attack margins than benign
+ones. Adaptation changes every flow's margin, so the distributions
+shift as well as separate: after adaptation each class migrates to its
+correct side of the boundary with larger magnitude, and the horizontal
+ranges of the two panels differ accordingly.}
+\label{fig:logits}
+\end{figure*}
+
+\obs{3} \emph{Adaptation must be paired with retention.} An adapted
+model is a specialist. After CTTA, F1 on the \emph{source} test set
+falls to $0.35$ on average for the KAN, and the loss is strongly
+directional: models pre-trained on UNSW-NB15 forget it almost
+completely, while adaptation toward UNSW-NB15 from ToN-IoT retains
+$0.71$. The asymmetry mirrors dataset breadth. UNSW-NB15's decision
+function occupies a narrow, brittle region that any adaptation
+overwrites, whereas broader source distributions such as ToN-IoT share
+support with their targets; Section~\ref{sec:splines} traces this
+brittleness to a visible property of what the UNSW model learned. A
+deployable system therefore needs a retention mechanism alongside
+adaptation, here AGSA plus overlay-based consolidation, and
+Section~\ref{sec:merge} shows that the consolidated model recovers the
+source exactly.
+
+\section{Ablations: Where and What to Adapt}\label{sec:ablate}
+
+\input{tab_subset}
+\input{tab_loss}
+\input{tab_pool}
+
+\obs{4} \emph{Where you adapt matters more than how much, and locality
+is what makes a small update surface sufficient.}
+Table~\ref{tab:subset} compares, under the full framework, the
+standard subset (norm layers, classifier, and last encoder layer) with
+the last encoder layer alone, for all three architectures. Restricting
+the update costs the KAN $1.4$ points ($0.818$ to $0.804$), the CNN
+$2.0$, and the TabTransformer $11.1$; the KAN's last layer alone
+outperforms every configuration of the other architectures. A
+pool-only sweep over finer subsets points the same way: the last KAN
+layer is the best single choice (mean $0.830$), and norm parameters,
+the canonical choice of TENT-style vision TTA
+\cite{wang2021tent,schneider2020bn}, are the weakest addition tested,
+with splines+norm ($0.761$) falling below spline-only ($0.772$). The
+explanation is structural. Tabular flow features, unlike corrupted
+images, do not shift primarily in their first two moments, so
+recalibrating affine normalization fixes little and adds interference;
+the useful degrees of freedom are the function-shape parameters
+nearest the head, and only the KAN concentrates them there. This is
+what makes the per-site overlays of Section~\ref{sec:ssr} possible.
+
+
+\obs{5} \emph{The labelled anchor does the work; entropy minimization
+alone is catastrophic under imbalance.} Table~\ref{tab:loss} deletes
+terms from Eq.~\eqref{eq:loss} under the spline-only subset. Pure
+confidence-filtered entropy minimization, the TENT-like variant,
+collapses on five of six pairs and bottoms out at F1 $0.001$ on
+CIC$\to$UNSW. With attack rates between 5\% and 39\%, the entropy
+gradient is dominated by the majority class and the model converges to
+confidently predicting benign everywhere, which is the failure a
+security system cannot tolerate and one that balanced-class vision
+benchmarks never surface. Any variant containing the 100-flow anchor
+lands between $0.72$ and $0.76$ mean F1. The full objective is best
+($0.765$ mean, and $+0.10$ over CE-only on the severe CIC$\to$UNSW
+shift), with the unsupervised terms adding $+0.04$ mean over the anchor
+alone, a consistent gain but an order of magnitude smaller than the
+anchor's contribution. For NIDS, test-time adaptation in the strictly
+unsupervised sense \cite{wang2021tent} is not merely suboptimal; it is
+unsafe. This is the empirical footing for the framework's anchor-first
+design.
+
+\subsection{AGSA in the Episodic Setting}\label{sec:agsa}
+\obs{6} \emph{Structural gating is free, and its statistics are the
+fleet's telemetry.} We compare spline-only adaptation with the AGSA
+gate on versus off under identical weights and RNG on all six KAN
+pairs. The target stream activates only $36\%$ to $47\%$ of spline
+coefficients, so the gate freezes more than half of the spline
+support, yet mean target F1 is fully preserved ($0.804$ gated vs.\
+$0.799$ ungated), and on the two severest shifts the gate gains
+$+3.0$ and $+3.7$ points (CIC$\to$UNSW and ToN$\to$UNSW). This
+confirms the design premise: dormant-region coefficients contribute
+nothing to target fitting, so protecting them costs nothing. The
+measured EWC penalty after gated adaptation is
+$\leq 8\times 10^{-4}$, meaning that in Fisher-weighted terms the
+source function barely moves. The gate's by-product is as valuable as
+its protection: the per-domain activation masses it accumulates, with
+distinct per-domain signatures, are exactly the fingerprints that let
+Section~\ref{sec:merge} consolidate a fleet by routing.
+
+\section{Reading Adaptation Off the Splines}\label{sec:splines}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.79\textwidth]{fig_splines_unsw.png}
+\caption{KAN spline activations before (top two rows) and after (bottom
+two rows) adaptation for UNSW-NB15$\to$CICIDS2018: the four most
+important input features (first encoder layer) and hidden units (last
+encoder layer). The UNSW-pre-trained first layer is dominated by
+TTL-derived features (\texttt{MAX\_TTL}, \texttt{MIN\_TTL}) with
+near-linear, low-importance curves ($1.43$, an order of magnitude below
+the $15.0$ a ToN-IoT-trained model assigns its top feature): the source
+task was solved by a low-complexity shortcut. Selective adaptation
+leaves the first layer untouched (rows 1 vs.\ 3); the last layer must
+compensate, its top importance jumping from $0.23$ to $5.08$ and its
+functions becoming strongly non-linear (rows 2 vs.\ 4). The spline view
+thus records \emph{what} adaptation changed and \emph{diagnoses},
+before any target data arrives, why this source transfers worst
+(Observations~1 and~3).}
+\label{fig:splinesunsw}
+\end{figure*}
+
+The spline view turns the paper's quantitative results into a
+mechanism, a capability unique to the locality-based design. For a
+healthy source (ToN-IoT), the same analysis, which we summarize in
+text for space, shows what selective adaptation should look like: the
+first layer's learned feature
+transforms, rich high-importance curves on TCP window (importance
+$15.0$), application protocol, and flag features, are preserved
+verbatim, and adaptation is absorbed entirely by last-layer
+recombination of hidden units. The frozen curves are not a side effect
+but the point: they are the transferable knowledge the source model
+contributes, and the reason recovery from ToN-IoT is cheap.
+
+Fig.~\ref{fig:splinesunsw} (UNSW-NB15 source) shows the pathological
+case. The first layer barely learned anything beyond gently sloped
+functions of TTL-derived features, a known artifact-prone shortcut in
+UNSW-NB15, sufficient for $0.999$ in-domain F1 but nearly useless
+elsewhere. Under adaptation the only place capacity exists is the last
+layer, which contorts (importance $0.23\to 5.08$, strongly oscillatory
+curves) to rebuild discriminative structure from weak inputs. This
+single picture explains the cluster of UNSW anomalies in
+Table~\ref{tab:main}: the worst zero-shot transfer out of UNSW, and the
+near-total forgetting of UNSW after adaptation away from it. The narrow
+shortcut is overwritten immediately because little transferable
+structure holds it in place. For the CNN and TabTransformer the same
+pathology can only be inferred indirectly; the KAN exposes it as an
+artifact of the source data that an operator could catch before
+deployment. In a domain where analysts must justify why a detector
+fired, and why it was retrained, this readability is a deployment
+requirement rather than a convenience.
+
+\section{Fleet Consolidation: Merging Fails, Routing Succeeds}
+\label{sec:merge}
+
+\input{tab_merge}
+\input{tab_ssr}
+
+The episodic grid adapts one model to one network. A fleet operator
+faces the next problem: several copies of the source model have
+adapted at several sites, and operations wants one model that serves
+them all, including the source network, without shipping traffic
+between sites. Model merging, in the form of soups
+\cite{wortsman2022soups} and task arithmetic \cite{ilharco2023task},
+promises exactly this with no data at all, so it is the natural first
+candidate. We test it two ways on the KAN with source CICIDS2018.
+
+\emph{Interpolation as a retention dial.} For a single adapted model,
+$\theta(\alpha)=\theta_{\text{src}}+\alpha(\theta_{\text{adapted}}
+-\theta_{\text{src}})$ sweeps a source/target trade-off using nothing
+but the two checkpoints; only the two adapted spline tensors differ.
+For the moderate shift (CIC$\leftrightarrow$ToN) this dial is
+effective: $\alpha{=}0.5$ scores $0.893$ on the source and $0.692$ on
+the target, buying back $50$ points of source F1 for $9$ points of
+target, post hoc and without data. Under the inverted shift
+(CIC$\leftrightarrow$UNSW) no useful intermediate exists: target F1
+stays below $0.08$ until $\alpha\geq 0.75$. Interpolation works where
+domains share support; it cannot average across an inverted boundary.
+
+\obs{7} \emph{Static merging fails, and the activation masks explain
+why.} Table~\ref{tab:merge} merges two copies of the source model
+adapted in parallel to ToN-IoT and UNSW-NB15. Every static fusion
+collapses on at least one domain, with all-domain means between $0.45$
+and $0.49$. The AGSA activation masks of the two targets overlap
+$77\%$ (Jaccard), so the parallel adaptations compete for the same
+spline regions, and any weight arithmetic in those contested regions
+averages away the more delicate solution. Locality softens the damage;
+the AGSA-routed static merge preserves the source best ($0.761$ vs.\
+$0.744$ uniform, with dormant regions provably identical to the
+source). But no single coefficient tensor can hold two conflicting
+functions on the same support.
+
+\obs{8} \emph{Routing at deployment granularity turns failed merging
+into lossless consolidation, in every configuration.} If the domains
+cannot share one function, the consolidated model can instead choose
+the function per window, using the SSR router of Eq.~\eqref{eq:ssr}.
+Per-flow routing is genuinely impossible: accuracy stalls between
+$69\%$ and $86\%$ across configurations, because single flows,
+especially benign ones, are domain-ambiguous, and the per-flow SSR row
+of Table~\ref{tab:merge} inherits that ceiling. The signal aggregates
+fast, however. In all three source configurations
+(Table~\ref{tab:ssr}) the router is at least $99.7\%$ correct at
+16-flow windows and exact from $64$, and with one decision per
+evaluation batch of at least 512 flows it routed all $2{,}349$ batches
+across the three configurations correctly. Consolidation is therefore
+lossless: every domain receives exactly its own expert's F1, and on
+source traffic the consolidated model is bit-identical to the source
+model ($0.968$/$0.929$/$0.999$, matching the in-domain scores to four
+decimals). The all-domain mean reaches $0.861$/$0.895$/$0.821$ with no
+stored traffic and no consolidation training, and on streams that
+switch network mid-flight ($100$k flows per segment) the router tracks
+every change within at most one window. A single-model alternative we
+also evaluated, which carries one detector through the three networks
+sequentially while replaying each site's 100-flow pool with AGSA
+enabled, tops out at endpoint all-domain means of $0.78$ to $0.80$
+while requiring stored pools and a serial pass; routing dominates it
+on every axis. The joint-pool baseline (Joint$_{300}$ in
+Tables~\ref{tab:merge} and~\ref{tab:ssr}) sharpens the division of
+labor. Despite consuming all $300$ pool labels at consolidation time,
+it trails label-free SSR by $7$ to $11$ points of mean in the two
+broad-source configurations and degrades the source by $10$ to $15$
+points, because one function must compromise across conflicting
+domains. What routing cannot do is repair a weak expert. From the
+shortcut-ridden UNSW-NB15 source, the UNSW$\to$CIC overlay itself
+reaches only $0.623$ (Section~\ref{sec:splines} explains why), the
+consolidated floor inherits it, and there the joint model's labels
+partially repair what routing can only reproduce ($0.831$ vs.\ $0.821$
+mean): routing preserves experts, and only labels can repair one.
+Floors are set by adaptation quality, never by consolidation. The
+remaining caveat is inherent. Window routing assumes domain-pure
+windows, which holds for a sensor on one segment but not for a tap
+aggregating several networks, where a single jointly fitted function
+(the Joint$_{300}$ row) is the fallback. This completes the retention
+picture: masks own the dormant regions, labels own the shared regions,
+and routing owns the fleet case, each mechanism reading the same
+spline-locality structure a different way.
+
+\section{Why a KAN Wins This Setting}\label{sec:whykan}
+The setting plays to the KAN's structure in four measured ways.
+\emph{(1)~Recovery.} The KAN posts the highest mean F1 under the
+framework ($0.819$ vs.\ $0.774$ and $0.760$), the highest worst-case
+pair ($0.771$ vs.\ $0.697$ and $0.591$), and the strongest pool-only
+recovery ($0.823$): because spline updates are local, a hundred
+labelled flows reshape exactly the regions target traffic occupies,
+while the controls need the stream at any label budget.
+\emph{(2)~Capacity where selective adaptation needs it.} Restricting
+the update to the last spline layer costs the KAN only $1.4$ points,
+against $11.1$ for the TabTransformer (Table~\ref{tab:subset}), so the
+cheapest update surface carries essentially the whole adaptation,
+which makes low-memory, on-path adaptation plausible on network
+appliances.
+\emph{(3)~Structural retention.} AGSA has no analogue under global
+weights: it is free episodically (Observation~6) and its statistics
+are the fingerprints that make lossless consolidation possible
+(Observation~8), so one mechanism buys both protection and telemetry.
+\emph{(4)~Auditability.} Because each learned function is a curve over
+a named feature, the spline view turns adaptation into an inspectable
+object and diagnosed a source-data shortcut (the TTL features of
+UNSW-NB15) that no aggregate metric of the controls reveals
+(Section~\ref{sec:splines}). These advantages are largest exactly in
+the regime operators face, few-shot selective adaptation with
+retention requirements, and the KAN's ${\sim}10^5$ parameters are
+negligible for any network appliance. Locality is the one property the
+competing architectures cannot bolt on.
+
+\section{Discussion and Limitations}\label{sec:discussion}
+\textbf{What generalizes.} Three findings were stable across all
+architectures and directions: zero-shot collapse despite schema
+parity, the dominance of a small supervised anchor over any
+unsupervised signal, and severe asymmetric forgetting. None of them
+depends on the encoder's inductive bias, so we expect them to hold for
+other flow-based detectors. The subset, gating, and routing results
+(Observations~4 and 6--8) are KAN-specific by construction.
+
+\textbf{Porting SSR beyond the KAN.} Nothing in Eq.~\eqref{eq:ssr} is
+KAN-specific except the source of the density: any architecture can
+route per-site overlays if it is paired with a per-site density
+estimate over the input features, for instance per-feature histograms
+fitted on site traffic and scored with the same window vote. The
+difference is the cost of that estimator. For the KAN it comes
+pre-installed: the binning is the model's own spline grid ($49$
+features $\times$ $8$ basis functions, a $392$-bin fingerprint of
+about $1.5$\,KB), the activations are computed by every forward pass,
+and AGSA accumulates the statistics during adaptation, with no added
+parameters and no training. The natural in-model statistics of the
+controls are weaker. A CNN's batch-norm moments summarize each channel
+by mean and variance, precisely the statistics the subset ablation
+found least informative for flow-level shift, and the TabTransformer
+exposes no per-feature-region structure at all, so both require an
+external estimator that must be binned, fitted per site, and shipped
+as separate state. Ported overlays would be smaller ($2{,}338$ and
+$738$ parameters), but the fleet would inherit weaker experts (means
+$0.774$/$0.760$, floors $0.697$/$0.591$, vs.\ $0.819$/$0.771$ for the
+KAN). Quantifying such extensions is future work.
+
+\textbf{Operator's recipe.} (1)~Before moving a detector, inspect what
+the source model learned; flat, low-importance first-layer splines are
+a transfer red flag (Section~\ref{sec:splines}). (2)~Label about 100
+stratified flows before trusting any adaptation. (3)~Adapt the last
+encoder layer plus head, not the norm layers, with the pool as anchor,
+the marginal-prior guard, and stream reconstruction. (4)~Never deploy
+unsupervised entropy adaptation on imbalanced security traffic.
+(5)~Adapt with AGSA enabled; the gate is free and its fingerprint is
+required later for consolidation. (6)~Archive the source checkpoint;
+interpolation is a retention dial for moderate shifts, but checkpoint
+arithmetic is not a substitute for routing (Section~\ref{sec:merge}).
+(7)~Keep each site's overlay and fingerprint; window-SSR consolidates
+the fleet into one self-routing model at no data cost, provided each
+sensor's window sees one network at a time.
+
+\textbf{Limitations.} Labels are binarized, so per-attack-family
+dynamics are invisible. The three benchmarks are research corpora with
+known labelling artifacts \cite{apruzzese2022cross}, although
+Section~\ref{sec:splines} shows the methodology detecting exactly such
+an artifact. The stratified pool assumes the analyst labels a roughly
+representative sample. Each target stream is stationary, whereas real
+traffic also drifts within a site \cite{andresini2021insomnia}. The
+consolidation study covers one architecture, by design, since SSR
+requires the spline grid that only the KAN provides.
+
+\section{Conclusion}\label{sec:conclusion}
+When a flow-based intrusion detector moves to a new network its
+accuracy collapses, occasionally to inverted decisions, even under an
+identical feature schema. We presented a few-shot test-time adaptation
+framework that recovers this loss from a hundred labelled flows and
+the live stream, restoring mean F1 from $0.23$ to $0.82$ with the KAN
+achieving the best mean and the best worst case of the architectures
+tested. The statistics its gating mechanism accumulates then turn a
+fleet of adapted copies into a single self-routing model that gives
+every network its own expert's accuracy, a mean of $0.82$ to $0.90$,
+while remaining bit-identical to the source model on source traffic
+and storing no traffic. The negative results are equally actionable:
+unsupervised entropy minimization is unsafe on imbalanced security
+streams, norm-only adaptation transplants poorly from vision, and
+static weight merging cannot consolidate what routing can. The
+underlying argument is architectural. Locality makes adaptation
+confinable, readable, and self-monitoring, and on every aggregate
+measure of this study it is the property that wins.
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}
