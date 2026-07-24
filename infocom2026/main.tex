@@ -14,8 +14,7 @@
 
 \begin{document}
 
-\title{One Model, Many Networks: \\Self-Routing Consolidation of KANs for
-Cross-Network Intrusion Detection}
+\title{SPLINTER: SPLINe TransfER for Auditable Cross-Network Intrusion Detection}
 
 % INFOCOM submissions are double-blind: keep the block below anonymized for
 % submission and restore author names for the camera-ready version.
@@ -25,37 +24,7 @@ Cross-Network Intrusion Detection}
 \maketitle
 
 \begin{abstract}
-Flow-based network intrusion detection systems are usually trained on
-one network and deployed on another. We show that this transfer fails
-even when the feature schema is identical. Across every ordered pair of
-three NetFlow benchmarks that share the same 49 features, zero-shot F1
-averages $0.23$, although in-domain F1 exceeds $0.92$. This paper
-presents a few-shot test-time adaptation framework that restores
-accuracy under realistic operating constraints. An analyst labels 100
-flows, about $10^{-4}$ of the target traffic; the rest arrives as an
-unlabelled stream, and every batch is scored before it is used for
-adaptation. A class-weighted supervised loss on the labelled pool
-anchors the adaptation and prevents the failure mode of purely
-unsupervised methods, which on imbalanced traffic converge to
-predicting the benign class everywhere (F1 as low as $0.001$). The
-central mechanism, activation-gated spline adaptation (AGSA), builds on
-the locality of Kolmogorov--Arnold network (KAN) spline bases. It
-tracks which basis regions the target traffic activates and freezes the
-rest, so updates are confined to regions for which the new network
-supplies evidence. Over 18 source$\to$target runs the framework
-restores mean F1 to $0.82$ with the KAN, which attains both the
-highest mean and the highest worst-case recovery of the three
-architectures evaluated. The activation statistics that AGSA maintains also support
-fleet consolidation: spline-support routing (SSR) combines the adapted
-models of several sites, each a spline overlay of about 74\,KB, into
-one model that identifies which network it is observing within a few
-dozen flows. The consolidated model reaches an all-domain mean F1 of
-$0.82$ to $0.90$ while storing no traffic, requiring no further
-training, and remaining bit-identical to the source model on source
-traffic. Because each learned function is a univariate curve attached
-to a named flow feature, plots of the curves before and after
-adaptation show what changed and explain why one benchmark transfers
-poorly, so the adaptation itself can be audited.
+Network intrusion detection systems (NIDS) trained on one network do not transfer to another, because flow feature distributions differ across deployments. Two remedies are common: fine-tuning or domain adaptation on target traffic, and a separate model per site. Fine-tuning needs labelled target traffic and overwrites the source weights, so detection at the original site is no longer guaranteed; per-site training multiplies storage and maintenance; and neither explains what the adaptation changed. We propose activation-gated spline adaptation (AGSA), which exploits the locality of Kolmogorov–Arnold networks (KANs): each learned function is a univariate spline attached to a named flow feature, so adaptation is confined to the splines the target traffic activates. AGSA freezes the source weights, fits an overlay per site, and records activation statistics per overlay. Spline-support routing (SSR) merges these overlays into one model that identifies which network it is observing within a few dozen flows, then applies that site's curves. The consolidated model reaches a mean F1 of 0.82 to 0.90 across domains, stores no traffic, needs no further training, and remains bit-identical to the source model on source traffic. AGSA provides built-in explainability by using feature-specific curves that make both its detection decisions and model adaptations auditable.
 \end{abstract}
 
 \begin{IEEEkeywords}
