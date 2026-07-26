@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+.DS_Store
+# experiment outputs
+grid_results.csv
+ablation_results.csv
+sequential_results.csv
+*.png
